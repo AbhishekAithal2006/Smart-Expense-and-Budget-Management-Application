@@ -1,0 +1,30 @@
+name: Build and verify
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check Python syntax
+        run: python -m py_compile app/app.py app/tests/test_app.py
+      - name: Run application flow checks
+        run: cd app && python -m unittest discover -s tests -v
+      - name: Check browser JavaScript syntax
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --check app/static/app.js

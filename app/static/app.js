@@ -1,0 +1,250 @@
+const $ = (selector) => document.querySelector(selector);
+const state = { csrf: '', mode: 'login', toastTimer: null };
+const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format((cents || 0) / 100);
+const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const monthNow = () => localDate().slice(0, 7);
+
+async function api(url, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (options.method && options.method !== 'GET') headers['X-CSRF-Token'] = state.csrf;
+  const response = await fetch(url, { credentials: 'same-origin', ...options, headers });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'Something went wrong. Please try again.');
+  if (payload.csrfToken) state.csrf = payload.csrfToken;
+  return payload;
+}
+
+function toast(message) {
+  const node = $('#toast');
+  node.textContent = message;
+  node.classList.add('show');
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => node.classList.remove('show'), 2800);
+}
+
+function setAuthMode(mode) {
+  state.mode = mode;
+  const login = mode === 'login';
+  $('#login-tab').classList.toggle('active', login);
+  $('#register-tab').classList.toggle('active', !login);
+  $('#login-tab').setAttribute('aria-selected', String(login));
+  $('#register-tab').setAttribute('aria-selected', String(!login));
+  $('#auth-title').textContent = login ? 'Welcome back' : 'Make yourself at home';
+  $('#auth-subtitle').textContent = login ? 'Pick up right where you left off.' : 'Create an account to start tracking.';
+  $('#auth-submit').innerHTML = `${login ? 'Log in' : 'Create account'} <span aria-hidden="true">→</span>`;
+  $('#auth-password').autocomplete = login ? 'current-password' : 'new-password';
+  $('#register-name-field').classList.toggle('hidden', login);
+  $('#auth-name').required = !login;
+  $('#auth-error').textContent = '';
+}
+
+function showApp(email, fullName = '') {
+  $('#auth-view').classList.add('hidden');
+  $('#app-view').classList.remove('hidden');
+  $('#user-email').textContent = email;
+  $('#user-email').classList.remove('hidden');
+  $('#profile-button').classList.remove('hidden');
+  $('#logout-button').classList.remove('hidden');
+  $('#profile-name-summary').textContent = fullName || '—';
+  $('#auth-password').value = '';
+  $('#expense-date').value = localDate();
+  $('#month-filter').value = monthNow();
+  $('#month-label').textContent = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }).toUpperCase();
+  refresh();
+}
+
+function showAuth() {
+  $('#app-view').classList.add('hidden');
+  $('#auth-view').classList.remove('hidden');
+  $('#user-email').classList.add('hidden');
+  $('#profile-button').classList.add('hidden');
+  $('#logout-button').classList.add('hidden');
+  $('#profile-card').classList.add('hidden');
+  state.csrf = '';
+}
+
+async function refresh() {
+  try {
+    await Promise.all([loadSummary(), loadExpenses(), loadProfile()]);
+  } catch (error) {
+    if (error.message.includes('log in')) showAuth();
+    else toast(error.message);
+  }
+}
+
+async function loadSummary() {
+  const summary = await api('/api/summary');
+  $('#spent-total').textContent = money(summary.spentCents);
+  $('#month-transaction-count').textContent = summary.expenseCount;
+  $('#spent-status').textContent = `${summary.expenseCount} ${summary.expenseCount === 1 ? 'transaction' : 'transactions'} this month`;
+}
+
+async function loadProfile() {
+  const profile = await api('/api/profile');
+  $('#profile-name').value = profile.fullName;
+  $('#profile-email').value = profile.email;
+  $('#profile-mobile').value = profile.mobile;
+  $('#profile-name-summary').textContent = profile.fullName || '—';
+  $('#user-email').textContent = profile.email;
+}
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function categorySymbol(category) {
+  return ({ Food: '✳', Travel: '↗', Shopping: '◇', Medical: '+', Entertainment: '♫', Home: '⌂', Utilities: '⌁' })[category] || '•';
+}
+
+function addActionCell(row, expense) {
+  const cell = element('td');
+  const actions = element('div', 'row-actions');
+  const edit = element('button', 'row-action', 'Edit');
+  edit.type = 'button';
+  edit.setAttribute('aria-label', `Edit ${expense.category} expense`);
+  edit.addEventListener('click', () => editExpense(expense));
+  const remove = element('button', 'row-action', 'Delete');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', `Delete ${expense.category} expense`);
+  remove.addEventListener('click', () => deleteExpense(expense.id));
+  actions.append(edit, remove);
+  cell.append(actions);
+  row.append(cell);
+}
+
+async function loadExpenses() {
+  const params = new URLSearchParams();
+  if ($('#search-input').value.trim()) params.set('q', $('#search-input').value.trim());
+  if ($('#category-filter').value) params.set('category', $('#category-filter').value);
+  if ($('#month-filter').value) params.set('month', $('#month-filter').value);
+  const result = await api(`/api/expenses?${params.toString()}`);
+  const rows = $('#expense-rows');
+  rows.replaceChildren();
+  for (const expense of result.expenses) {
+    const row = document.createElement('tr');
+    const detail = element('td');
+    const expenseName = element('span', 'expense-name');
+    expenseName.append(element('span', 'category-mark', categorySymbol(expense.category)));
+    const text = document.createElement('span');
+    text.append(document.createTextNode(expense.category));
+    if (expense.description) text.append(element('span', 'expense-description', expense.description));
+    expenseName.append(text);
+    detail.append(expenseName);
+    const dateCell = element('td', '', new Date(`${expense.spent_on}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }));
+    const payment = element('td', '', expense.payment_method || '—');
+    const amount = element('td', 'amount-cell', money(expense.amount_cents));
+    row.append(detail, dateCell, payment, amount);
+    addActionCell(row, expense);
+    rows.append(row);
+  }
+  const count = result.expenses.length;
+  $('#expense-count').textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
+  $('#empty-state').classList.toggle('hidden', count > 0);
+  $('.table-wrap').classList.toggle('hidden', count === 0);
+}
+
+async function editExpense(expense) {
+  const amount = window.prompt('Amount in rupees', (expense.amount_cents / 100).toFixed(2));
+  if (amount === null) return;
+  const category = window.prompt('Category', expense.category);
+  if (category === null) return;
+  const description = window.prompt('Description', expense.description);
+  if (description === null) return;
+  const date = window.prompt('Date (YYYY-MM-DD)', expense.spent_on);
+  if (date === null) return;
+  const paymentMethod = window.prompt('Payment method', expense.payment_method);
+  if (paymentMethod === null) return;
+  try {
+    await api(`/api/expenses/${expense.id}`, { method: 'PATCH', body: JSON.stringify({ amount, category, description, date, paymentMethod }) });
+    toast('Expense updated.');
+    await refresh();
+  } catch (error) { toast(error.message); }
+}
+
+async function deleteExpense(id) {
+  if (!window.confirm('Delete this expense? This cannot be undone.')) return;
+  try {
+    await api(`/api/expenses/${id}`, { method: 'DELETE' });
+    toast('Expense deleted.');
+    await refresh();
+  } catch (error) { toast(error.message); }
+}
+
+$('#today-label').textContent = new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+$('#login-tab').addEventListener('click', () => setAuthMode('login'));
+$('#register-tab').addEventListener('click', () => setAuthMode('register'));
+$('#auth-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('#auth-error').textContent = '';
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    const result = await api(state.mode === 'login' ? '/api/login' : '/api/register', { method: 'POST', body: JSON.stringify(data) });
+    state.csrf = result.csrfToken;
+    showApp(result.email, result.fullName);
+  } catch (error) { $('#auth-error').textContent = error.message; }
+});
+
+$('#logout-button').addEventListener('click', async () => {
+  try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) { /* the session may already have expired */ }
+  showAuth();
+});
+
+$('#expense-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('#expense-error').textContent = '';
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    await api('/api/expenses', { method: 'POST', body: JSON.stringify(data) });
+    event.currentTarget.reset();
+    $('#expense-date').value = localDate();
+    toast('Expense saved.');
+    await refresh();
+  } catch (error) { $('#expense-error').textContent = error.message; }
+});
+
+$('#profile-button').addEventListener('click', async () => {
+  const card = $('#profile-card');
+  card.classList.toggle('hidden');
+  if (!card.classList.contains('hidden')) {
+    try { await loadProfile(); card.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    catch (error) { toast(error.message); }
+  }
+});
+$('#profile-close').addEventListener('click', () => $('#profile-card').classList.add('hidden'));
+$('#profile-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('#profile-error').textContent = '';
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  try {
+    const profile = await api('/api/profile', { method: 'PATCH', body: JSON.stringify(data) });
+    $('#user-email').textContent = profile.email;
+    $('#profile-name-summary').textContent = profile.fullName;
+    toast('Profile updated.');
+  } catch (error) { $('#profile-error').textContent = error.message; }
+});
+
+$('#filter-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await loadExpenses(); } catch (error) { toast(error.message); } });
+$('#clear-filters').addEventListener('click', async () => {
+  $('#search-input').value = '';
+  $('#category-filter').value = '';
+  $('#month-filter').value = '';
+  try { await loadExpenses(); } catch (error) { toast(error.message); }
+});
+$('#add-expense-shortcut').addEventListener('click', () => {
+  $('#expense-form-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('#expense-amount').focus({ preventScroll: true });
+});
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && !$('#app-view').classList.contains('hidden')) {
+    event.preventDefault();
+    $('#search-input').focus();
+  }
+});
+
+api('/api/me').then((session) => {
+  state.csrf = session.csrfToken || '';
+  if (session.authenticated) showApp(session.email);
+}).catch(() => {});

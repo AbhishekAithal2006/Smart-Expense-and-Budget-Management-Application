@@ -207,11 +207,12 @@ $('#logout-button').addEventListener('click', async () => {
 
 $('#expense-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const form = event.currentTarget;
   $('#expense-error').textContent = '';
-  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const data = Object.fromEntries(new FormData(form));
   try {
     await api('/api/expenses', { method: 'POST', body: JSON.stringify(data) });
-    event.currentTarget.reset();
+    form.reset();
     $('#expense-date').value = localDate();
     toast('Expense saved.');
     await refresh();

@@ -99,6 +99,33 @@ async function loadProfile() {
   $('#profile-mobile').value = profile.mobile;
   $('#profile-name-summary').textContent = profile.fullName || '—';
   $('#user-email').textContent = profile.email;
+  $('#profile-display-name').textContent = profile.fullName || 'Your account';
+  $('#profile-display-email').textContent = profile.email;
+  $('#profile-login-badge').textContent = `${profile.loginMethod} sign-in`;
+  $('#profile-sign-in-method').textContent = profile.loginMethod;
+  const createdAt = new Date(profile.createdAt);
+  $('#profile-created-at').textContent = Number.isNaN(createdAt.getTime()) ? '—' : createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  setProfileAvatar(profile.avatarUrl, profile.fullName);
+}
+
+function setProfileAvatar(url, name) {
+  const image = $('#profile-avatar');
+  const fallback = $('#profile-avatar-initials');
+  const initials = (name || 'User').trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+  fallback.textContent = initials || 'U';
+  fallback.classList.remove('hidden');
+  image.classList.add('hidden');
+  image.onerror = () => {
+    image.classList.add('hidden');
+    fallback.classList.remove('hidden');
+  };
+  if (typeof url === 'string' && /^https:\/\/lh\d+\.googleusercontent\.com\//.test(url)) {
+    image.src = url;
+    image.classList.remove('hidden');
+    fallback.classList.add('hidden');
+  } else {
+    image.removeAttribute('src');
+  }
 }
 
 function element(tag, className, text) {
@@ -236,6 +263,8 @@ $('#profile-form').addEventListener('submit', async (event) => {
     const profile = await api('/api/profile', { method: 'PATCH', body: JSON.stringify(data) });
     $('#user-email').textContent = profile.email;
     $('#profile-name-summary').textContent = profile.fullName;
+    $('#profile-display-name').textContent = profile.fullName;
+    $('#profile-display-email').textContent = profile.email;
     toast('Profile updated.');
   } catch (error) { $('#profile-error').textContent = error.message; }
 });

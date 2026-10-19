@@ -51,6 +51,7 @@ def initialize() -> None:
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 mobile TEXT NOT NULL DEFAULT '',
                 google_sub TEXT,
+                avatar_url TEXT NOT NULL DEFAULT '',
                 password_hash BLOB NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -85,6 +86,8 @@ def initialize() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN mobile TEXT NOT NULL DEFAULT ''")
         if "google_sub" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        if "avatar_url" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
 
 
@@ -100,6 +103,15 @@ def _password_matches(password: str, stored: bytes) -> bool:
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+
+def _google_avatar_url(value: object) -> str:
+    candidate = str(value or "")[:2048]
+    parsed = urlparse(candidate)
+    host = parsed.hostname or ""
+    if parsed.scheme == "https" and re.fullmatch(r"lh\d+\.googleusercontent\.com", host) and parsed.netloc.lower() == host.lower():
+        return candidate
+    return ""
 
 
 def _same_origin_request(handler: BaseHTTPRequestHandler) -> bool:
@@ -129,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
-        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         if headers:
             for key, value in headers.items():
                 self.send_header(key, value)
@@ -226,6 +238,7 @@ class Handler(BaseHTTPRequestHandler):
                 identity = json.loads(response.read())
             email = str(identity.get("email", "")).strip().lower()[:254]
             google_sub = str(identity.get("sub", ""))[:255]
+            avatar_url = _google_avatar_url(identity.get("picture"))
             email_verified = identity.get("email_verified") is True or identity.get("email_verified") == "true"
             if not email_verified or not EMAIL_RE.fullmatch(email) or not google_sub:
                 raise ValueError("Google identity was missing a verified email")
@@ -238,13 +251,15 @@ class Handler(BaseHTTPRequestHandler):
                         if user["google_sub"] and user["google_sub"] != google_sub:
                             self._redirect("/?auth_error=google_account_conflict", [clear_state])
                             return
-                        conn.execute("UPDATE users SET google_sub=? WHERE id=?", (google_sub, user["id"]))
+                        conn.execute("UPDATE users SET google_sub=?,avatar_url=? WHERE id=?", (google_sub, avatar_url, user["id"]))
                     else:
                         cursor = conn.execute(
-                            "INSERT INTO users(full_name,email,google_sub,password_hash,created_at) VALUES(?,?,?,?,?)",
-                            (full_name, email, google_sub, _password_hash(secrets.token_urlsafe(48)), datetime.now(timezone.utc).isoformat()),
+                            "INSERT INTO users(full_name,email,google_sub,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?)",
+                            (full_name, email, google_sub, avatar_url, _password_hash(secrets.token_urlsafe(48)), datetime.now(timezone.utc).isoformat()),
                         )
                         user = {"id": cursor.lastrowid, "email": email}
+                else:
+                    conn.execute("UPDATE users SET avatar_url=? WHERE id=?", (avatar_url, user["id"]))
                 user_id = int(user["id"])
             token, _csrf = self._new_session(user_id)
             self._redirect("/", [clear_state, self._cookie_header(token)])
@@ -261,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         with db() as conn:
             return conn.execute(
-                "SELECT s.user_id, s.csrf_token, u.email, u.full_name, u.mobile FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
+                "SELECT s.user_id, s.csrf_token, u.email, u.full_name, u.mobile, u.google_sub, u.avatar_url, u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
                 (self._token_hash(token), int(time.time())),
             ).fetchone()
 
@@ -310,6 +325,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(data)
             return
@@ -335,7 +352,11 @@ class Handler(BaseHTTPRequestHandler):
             session = self._require_session()
             if session is None:
                 return
-            self._send(HTTPStatus.OK, {"fullName": session["full_name"], "email": session["email"], "mobile": session["mobile"]})
+            self._send(HTTPStatus.OK, {
+                "fullName": session["full_name"], "email": session["email"], "mobile": session["mobile"],
+                "avatarUrl": session["avatar_url"], "loginMethod": "Google" if session["google_sub"] else "Email and password",
+                "createdAt": session["created_at"],
+            })
             return
         if path.path == "/api/expenses":
             session = self._require_session()

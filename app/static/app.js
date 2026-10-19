@@ -101,10 +101,11 @@ async function loadProfile() {
   $('#user-email').textContent = profile.email;
   $('#profile-display-name').textContent = profile.fullName || 'Your account';
   $('#profile-display-email').textContent = profile.email;
-  $('#profile-login-badge').textContent = `${profile.loginMethod} sign-in`;
-  $('#profile-sign-in-method').textContent = profile.loginMethod;
-  const createdAt = new Date(profile.createdAt);
-  $('#profile-created-at').textContent = Number.isNaN(createdAt.getTime()) ? '—' : createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  const loginMethod = profile.loginMethod || 'Sign-in details unavailable';
+  $('#profile-login-badge').textContent = profile.loginMethod ? `${loginMethod} sign-in` : loginMethod;
+  $('#profile-sign-in-method').textContent = loginMethod;
+  const createdAt = profile.createdAt ? new Date(profile.createdAt) : null;
+  $('#profile-created-at').textContent = !createdAt || Number.isNaN(createdAt.getTime()) ? '—' : createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
   setProfileAvatar(profile.avatarUrl, profile.fullName);
 }
 

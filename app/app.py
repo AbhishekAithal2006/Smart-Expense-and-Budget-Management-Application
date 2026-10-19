@@ -16,7 +16,8 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
@@ -26,6 +27,9 @@ PORT = int(os.environ.get("PORT", "8000"))
 SESSION_TTL = 60 * 60 * 24 * 7
 SECRET = os.environ.get("SESSION_SECRET", "").encode("utf-8") or b"local-development-secret-change-before-deployment"
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", f"http://{HOST}:{PORT}/auth/google/callback")
 
 
 def db() -> sqlite3.Connection:
@@ -46,6 +50,7 @@ def initialize() -> None:
                 full_name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 mobile TEXT NOT NULL DEFAULT '',
+                google_sub TEXT,
                 password_hash BLOB NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -78,6 +83,9 @@ def initialize() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
         if "mobile" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN mobile TEXT NOT NULL DEFAULT ''")
+        if "google_sub" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
 
 
 def _password_hash(password: str, salt: bytes | None = None) -> bytes:
@@ -106,6 +114,10 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "SmartExpense/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
+        # OAuth callbacks carry one-time codes in their query string; never log them.
+        if urlparse(self.path).path == "/auth/google/callback":
+            super().log_message("OAuth callback query redacted")
+            return
         # Do not log request bodies, credentials, or session identifiers.
         super().log_message(fmt, *args)
 
@@ -133,12 +145,112 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Send a valid JSON object.")
 
     def _cookie(self) -> str | None:
+        return self._cookie_named("session")
+
+    def _cookie_named(self, name: str) -> str | None:
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie", ""))
-            return cookie["session"].value if "session" in cookie else None
+            return cookie[name].value if name in cookie else None
         except Exception:
             return None
+
+    def _redirect(self, location: str, cookies: list[str] | None = None) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        for cookie in cookies or []:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+
+    def _google_state_cookie(self, state: str, clear: bool = False) -> str:
+        secure = "; Secure" if os.environ.get("SECURE_COOKIE", "0") == "1" else ""
+        if clear:
+            return f"google_oauth_state=; Path=/auth/google; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
+        return f"google_oauth_state={state}; Path=/auth/google; HttpOnly; SameSite=Lax; Max-Age=600{secure}"
+
+    def _start_google_auth(self) -> None:
+        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+            self._redirect("/?auth_error=google_not_configured")
+            return
+        state = secrets.token_urlsafe(32)
+        query = urlencode({
+            "client_id": GOOGLE_CLIENT_ID,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "prompt": "select_account",
+        })
+        self._redirect(f"https://accounts.google.com/o/oauth2/v2/auth?{query}", [self._google_state_cookie(state)])
+
+    def _finish_google_auth(self, query: dict[str, list[str]]) -> None:
+        state_cookie = self._cookie_named("google_oauth_state") or ""
+        state = query.get("state", [""])[0]
+        clear_state = self._google_state_cookie("", clear=True)
+        if query.get("error"):
+            self._redirect("/?auth_error=google_cancelled", [clear_state])
+            return
+        code = query.get("code", [""])[0]
+        if not state or not state_cookie or not hmac.compare_digest(state, state_cookie) or not code:
+            self._redirect("/?auth_error=google_state", [clear_state])
+            return
+        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+            self._redirect("/?auth_error=google_not_configured", [clear_state])
+            return
+
+        try:
+            token_request = UrlRequest(
+                "https://oauth2.googleapis.com/token",
+                data=urlencode({
+                    "code": code,
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": GOOGLE_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                }).encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            with urlopen(token_request, timeout=10) as response:
+                token_payload = json.loads(response.read())
+            access_token = token_payload.get("access_token")
+            if not access_token:
+                raise ValueError("Google did not return an access token")
+            userinfo_request = UrlRequest(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            with urlopen(userinfo_request, timeout=10) as response:
+                identity = json.loads(response.read())
+            email = str(identity.get("email", "")).strip().lower()[:254]
+            google_sub = str(identity.get("sub", ""))[:255]
+            email_verified = identity.get("email_verified") is True or identity.get("email_verified") == "true"
+            if not email_verified or not EMAIL_RE.fullmatch(email) or not google_sub:
+                raise ValueError("Google identity was missing a verified email")
+            full_name = str(identity.get("name", "")).strip()[:80] or email.split("@", 1)[0]
+            with db() as conn:
+                user = conn.execute("SELECT id,email,google_sub FROM users WHERE google_sub=?", (google_sub,)).fetchone()
+                if user is None:
+                    user = conn.execute("SELECT id,email,google_sub FROM users WHERE email=?", (email,)).fetchone()
+                    if user:
+                        if user["google_sub"] and user["google_sub"] != google_sub:
+                            self._redirect("/?auth_error=google_account_conflict", [clear_state])
+                            return
+                        conn.execute("UPDATE users SET google_sub=? WHERE id=?", (google_sub, user["id"]))
+                    else:
+                        cursor = conn.execute(
+                            "INSERT INTO users(full_name,email,google_sub,password_hash,created_at) VALUES(?,?,?,?,?)",
+                            (full_name, email, google_sub, _password_hash(secrets.token_urlsafe(48)), datetime.now(timezone.utc).isoformat()),
+                        )
+                        user = {"id": cursor.lastrowid, "email": email}
+                user_id = int(user["id"])
+            token, _csrf = self._new_session(user_id)
+            self._redirect("/", [clear_state, self._cookie_header(token)])
+        except Exception:
+            # Keep provider responses and tokens out of logs and user-visible errors.
+            self._redirect("/?auth_error=google_failed", [clear_state])
 
     def _token_hash(self, token: str) -> str:
         return hmac.new(SECRET, token.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -182,6 +294,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path)
+        if path.path == "/auth/google":
+            self._start_google_auth()
+            return
+        if path.path == "/auth/google/callback":
+            self._finish_google_auth(parse_qs(path.query))
+            return
         if path.path == "/" or path.path == "/index.html":
             try:
                 data = (ROOT / "static" / "index.html").read_bytes()

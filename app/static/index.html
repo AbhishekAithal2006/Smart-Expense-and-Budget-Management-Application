@@ -72,12 +72,20 @@
 
       <section id="profile-view" class="content-card profile-view hidden" aria-labelledby="profile-title">
         <div class="section-heading"><div><p class="eyebrow">YOUR ACCOUNT</p><h1 id="profile-title">Profile details</h1><p class="section-copy">Manage the personal details connected to your account.</p></div></div>
+        <div class="profile-identity">
+          <div class="profile-avatar"><img id="profile-avatar" class="hidden" alt="" referrerpolicy="no-referrer"><span id="profile-avatar-initials" aria-hidden="true">U</span></div>
+          <div class="profile-identity-copy"><h2 id="profile-display-name">Your account</h2><p id="profile-display-email"></p><span id="profile-login-badge" class="profile-login-badge">Email and password</span></div>
+        </div>
         <form id="profile-form" class="profile-form">
           <div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required></div>
           <div class="field"><label for="profile-email">Email address</label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required></div>
           <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30"></div>
           <div class="form-actions"><p id="profile-error" class="form-error" role="alert"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
         </form>
+        <div class="account-details" aria-label="Account information">
+          <div class="account-detail"><span>Sign-in method</span><strong id="profile-sign-in-method">Email and password</strong></div>
+          <div class="account-detail"><span>Member since</span><strong id="profile-created-at">—</strong></div>
+        </div>
       </section>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

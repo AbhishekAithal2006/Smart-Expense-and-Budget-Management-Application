@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { csrf: '', mode: 'login', toastTimer: null };
+const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null };
 const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format((cents || 0) / 100);
 const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const monthNow = () => localDate().slice(0, 7);
@@ -41,6 +41,7 @@ function setAuthMode(mode) {
 function showApp(email, fullName = '') {
   $('#auth-view').classList.add('hidden');
   $('#app-view').classList.remove('hidden');
+  showPage('home');
   $('#user-email').textContent = email;
   $('#user-email').classList.remove('hidden');
   $('#profile-button').classList.remove('hidden');
@@ -59,8 +60,20 @@ function showAuth() {
   $('#user-email').classList.add('hidden');
   $('#profile-button').classList.add('hidden');
   $('#logout-button').classList.add('hidden');
-  $('#profile-card').classList.add('hidden');
+  $('#profile-view').classList.add('hidden');
+  $('#home-view').classList.remove('hidden');
+  state.page = 'home';
+  $('#profile-button').textContent = 'Profile';
   state.csrf = '';
+}
+
+function showPage(page) {
+  state.page = page;
+  const isProfile = page === 'profile';
+  $('#home-view').classList.toggle('hidden', isProfile);
+  $('#profile-view').classList.toggle('hidden', !isProfile);
+  $('#profile-button').textContent = isProfile ? 'Home' : 'Profile';
+  $('#profile-button').setAttribute('aria-label', isProfile ? 'Return to home dashboard' : 'Open profile');
 }
 
 async function refresh() {
@@ -206,14 +219,14 @@ $('#expense-form').addEventListener('submit', async (event) => {
 });
 
 $('#profile-button').addEventListener('click', async () => {
-  const card = $('#profile-card');
-  card.classList.toggle('hidden');
-  if (!card.classList.contains('hidden')) {
-    try { await loadProfile(); card.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  const nextPage = state.page === 'profile' ? 'home' : 'profile';
+  showPage(nextPage);
+  if (nextPage === 'profile') {
+    try { await loadProfile(); }
     catch (error) { toast(error.message); }
   }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 });
-$('#profile-close').addEventListener('click', () => $('#profile-card').classList.add('hidden'));
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   $('#profile-error').textContent = '';

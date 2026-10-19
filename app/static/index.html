@@ -38,17 +38,8 @@
     </section>
 
     <section id="app-view" class="app-view hidden">
+      <div id="home-view">
       <div class="page-heading"><div><p class="eyebrow">OVERVIEW <span class="eyebrow-line"></span> <span id="month-label"></span></p><h1>Your money, at a glance.</h1><p class="page-subtitle">A clear picture of today and the month ahead.</p></div><button class="button button-primary" id="add-expense-shortcut" type="button">＋ Add expense</button></div>
-
-      <section id="profile-card" class="content-card profile-card hidden">
-        <div class="section-heading"><div><p class="eyebrow">YOUR ACCOUNT</p><h2>Profile details</h2><p class="section-copy">Keep your personal information up to date.</p></div><button id="profile-close" class="button button-quiet" type="button" aria-label="Close profile">×</button></div>
-        <form id="profile-form" class="profile-form">
-          <div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required></div>
-          <div class="field"><label for="profile-email">Email address</label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required></div>
-          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30"></div>
-          <div class="form-actions"><p id="profile-error" class="form-error" role="alert"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
-        </form>
-      </section>
 
       <section class="summary-grid" aria-label="Monthly expense overview">
         <article class="summary-card balance-card"><div class="card-top"><span class="card-label">SPENT THIS MONTH</span><span class="card-icon icon-mint">↗</span></div><p id="spent-total" class="summary-value">₹0</p><p class="card-caption">across your recorded expenses</p><p id="spent-status" class="progress-note">Your monthly total will appear here.</p></article>
@@ -75,6 +66,17 @@
         <div id="empty-state" class="empty-state"><span class="empty-icon">↗</span><h3>No expenses here yet</h3><p>Add your first expense above. Your history will build from there.</p></div>
       </section>
       <footer class="footer"><span>Made for clearer money days.</span><span>Your records are private to your account.</span></footer>
+      </div>
+
+      <section id="profile-view" class="content-card profile-view hidden" aria-labelledby="profile-title">
+        <div class="section-heading"><div><p class="eyebrow">YOUR ACCOUNT</p><h1 id="profile-title">Profile details</h1><p class="section-copy">Manage the personal details connected to your account.</p></div></div>
+        <form id="profile-form" class="profile-form">
+          <div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required></div>
+          <div class="field"><label for="profile-email">Email address</label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required></div>
+          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30"></div>
+          <div class="form-actions"><p id="profile-error" class="form-error" role="alert"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
+        </form>
+      </section>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </main>

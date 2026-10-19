@@ -16,6 +16,7 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and create an account. SQLit
 ## Features
 
 - Register with a name, email, and password; sign in and out.
+- Sign in or create an account with Google using the OAuth authorization-code flow.
 - Update name, email, and optional mobile number in the profile.
 - Add, edit, delete, search, and filter personal expenses.
 - View a monthly spending summary and transaction history.
@@ -32,6 +33,25 @@ python3 app.py backup backups/tracker-$(date +%F).sqlite3
 ```
 
 To restore, stop the server, preserve the current database, copy the backup to `data/tracker.sqlite3`, and restart. Keep backups access-controlled because they contain personal financial information.
+
+## Google sign-in setup
+
+Google sign-in is optional and requires a Google OAuth **Web application** client. In Google Cloud Console, configure the OAuth consent screen and add this exact authorized redirect URI for local development:
+
+```text
+http://127.0.0.1:8000/auth/google/callback
+```
+
+Set the client values in the environment before starting the app (keep the secret private and out of Git):
+
+```sh
+GOOGLE_CLIENT_ID='your-client-id' \
+GOOGLE_CLIENT_SECRET='your-client-secret' \
+GOOGLE_REDIRECT_URI='http://127.0.0.1:8000/auth/google/callback' \
+python3 app.py
+```
+
+The callback URI must match the value registered in Google Cloud Console. For a deployed app, use its HTTPS callback URL and set `SECURE_COOKIE=1`. The app asks Google only for OpenID Connect identity, email, and basic profile scopes. It links a verified Google email to an existing account with that email; Google-only accounts receive a randomly generated local password that is never shown or stored in plaintext.
 
 ## Deployment note
 

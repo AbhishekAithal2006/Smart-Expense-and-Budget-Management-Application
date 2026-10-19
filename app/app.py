@@ -431,6 +431,11 @@ class Handler(BaseHTTPRequestHandler):
                         failures = (attempt["failures"] if attempt else 0) + 1
                         blocked_until = now + 900 if failures >= 5 else 0
                         conn.execute("INSERT INTO login_attempts(email,failures,blocked_until) VALUES(?,?,?) ON CONFLICT(email) DO UPDATE SET failures=excluded.failures,blocked_until=excluded.blocked_until", (email, failures, blocked_until))
+                        # Persist the failed attempt before replying. The client may
+                        # retry as soon as it receives this response, and the
+                        # connection context would otherwise commit only after the
+                        # response has already been sent.
+                        conn.commit()
                         self._send(HTTPStatus.UNAUTHORIZED, {"error": "Email or password is incorrect."})
                         return
                     user_id = user["id"]

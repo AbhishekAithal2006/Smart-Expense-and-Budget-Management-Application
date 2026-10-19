@@ -257,6 +257,19 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+const googleErrors = {
+  google_not_configured: 'Google sign-in is not configured yet. Add the Google OAuth environment variables to enable it.',
+  google_cancelled: 'Google sign-in was cancelled.',
+  google_state: 'Google sign-in could not be verified. Please try again.',
+  google_account_conflict: 'This email is already linked to a different Google account.',
+  google_failed: 'Google sign-in failed. Please try again.'
+};
+const googleError = new URLSearchParams(window.location.search).get('auth_error');
+if (googleError) {
+  $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
+  window.history.replaceState(null, '', '/');
+}
+
 api('/api/me').then((session) => {
   state.csrf = session.csrfToken || '';
   if (session.authenticated) showApp(session.email);

@@ -1,7 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null, currencyCode: 'INR' };
 const currencySymbols = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
-const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: state.currencyCode, maximumFractionDigits: 2 }).format((cents || 0) / 100);
+const normalizeCurrencyCode = (value) => Object.hasOwn(currencySymbols, value) ? value : 'INR';
+const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: normalizeCurrencyCode(state.currencyCode), maximumFractionDigits: 2 }).format((cents || 0) / 100);
 const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const monthNow = () => localDate().slice(0, 7);
 
@@ -99,7 +100,7 @@ async function loadProfile() {
   $('#profile-name').value = profile.fullName;
   $('#profile-email').value = profile.email;
   $('#profile-mobile').value = profile.mobile;
-  state.currencyCode = currencySymbols[profile.currencyCode] ? profile.currencyCode : 'INR';
+  state.currencyCode = normalizeCurrencyCode(profile.currencyCode);
   $('#profile-currency').value = state.currencyCode;
   $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
   $('#profile-name-summary').textContent = profile.fullName || '—';
@@ -286,7 +287,7 @@ $('#profile-form').addEventListener('submit', async (event) => {
   }
   try {
     const profile = await api('/api/profile', { method: 'PATCH', body: JSON.stringify(data) });
-    state.currencyCode = profile.currencyCode;
+    state.currencyCode = normalizeCurrencyCode(profile.currencyCode || data.currencyCode);
     $('#profile-currency').value = state.currencyCode;
     $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
     $('#user-email').textContent = profile.email;

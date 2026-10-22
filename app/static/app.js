@@ -142,6 +142,10 @@ function categorySymbol(category) {
 
 function addActionCell(row, expense) {
   const cell = element('td');
+  if (expense.deleted_at) {
+    cell.append(element('span', 'deleted-expense-badge', 'Deleted'));
+    return row.append(cell);
+  }
   const actions = element('div', 'row-actions');
   const edit = element('button', 'row-action', 'Edit');
   edit.type = 'button';
@@ -172,6 +176,12 @@ async function loadExpenses() {
     const text = document.createElement('span');
     text.append(document.createTextNode(expense.category));
     if (expense.description) text.append(element('span', 'expense-description', expense.description));
+    if (expense.deleted_at) {
+      const deletedAt = new Date(expense.deleted_at);
+      const deletedLabel = Number.isNaN(deletedAt.getTime()) ? 'Deleted' : `Deleted on ${deletedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      text.append(element('span', 'expense-deleted-note', deletedLabel));
+      row.classList.add('expense-deleted-row');
+    }
     expenseName.append(text);
     detail.append(expenseName);
     const dateCell = element('td', '', new Date(`${expense.spent_on}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }));

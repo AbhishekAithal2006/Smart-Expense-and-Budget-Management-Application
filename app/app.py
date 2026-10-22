@@ -50,6 +50,7 @@ def initialize() -> None:
                 full_name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 mobile TEXT NOT NULL DEFAULT '',
+                currency_code TEXT NOT NULL DEFAULT 'INR',
                 google_sub TEXT,
                 avatar_url TEXT NOT NULL DEFAULT '',
                 password_hash BLOB NOT NULL,
@@ -85,6 +86,8 @@ def initialize() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN full_name TEXT NOT NULL DEFAULT ''")
         if "mobile" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN mobile TEXT NOT NULL DEFAULT ''")
+        if "currency_code" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'INR'")
         if "google_sub" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
         if "avatar_url" not in columns:
@@ -280,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         with db() as conn:
             return conn.execute(
-                "SELECT s.user_id, s.csrf_token, u.email, u.full_name, u.mobile, u.google_sub, u.avatar_url, u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
+                "SELECT s.user_id, s.csrf_token, u.email, u.full_name, u.mobile, u.currency_code, u.google_sub, u.avatar_url, u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
                 (self._token_hash(token), int(time.time())),
             ).fetchone()
 
@@ -358,6 +361,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(HTTPStatus.OK, {
                 "fullName": session["full_name"], "email": session["email"], "mobile": session["mobile"],
+                "currencyCode": session["currency_code"],
                 "avatarUrl": session["avatar_url"], "loginMethod": "Google" if session["google_sub"] else "Email and password",
                 "createdAt": session["created_at"],
             })
@@ -449,6 +453,36 @@ class Handler(BaseHTTPRequestHandler):
                 profile = conn.execute("SELECT full_name FROM users WHERE id=?", (user_id,)).fetchone()
             self._send(HTTPStatus.OK, {"email": email, "fullName": profile["full_name"], "csrfToken": csrf}, {"Set-Cookie": self._cookie_header(token)})
             return
+        if path == "/api/password":
+            session = self._require_session(write=True)
+            if session is None:
+                return
+            current_password = str(body.get("currentPassword", ""))
+            new_password = str(body.get("newPassword", ""))
+            confirm_password = str(body.get("confirmPassword", ""))
+            if len(new_password) < 10 or len(new_password) > 128:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Use a new password between 10 and 128 characters."})
+                return
+            if new_password != confirm_password:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "The new passwords do not match."})
+                return
+            with db() as conn:
+                user = conn.execute("SELECT password_hash,google_sub FROM users WHERE id=?", (session["user_id"],)).fetchone()
+                if user is None:
+                    self._send(HTTPStatus.NOT_FOUND, {"error": "Account not found."})
+                    return
+                if user["google_sub"]:
+                    self._send(HTTPStatus.BAD_REQUEST, {"error": "This account uses Google sign-in. Manage its password with Google."})
+                    return
+                if not _password_matches(current_password, user["password_hash"]):
+                    self._send(HTTPStatus.UNAUTHORIZED, {"error": "Your current password is incorrect."})
+                    return
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?", (_password_hash(new_password), session["user_id"]))
+                current_token = self._cookie()
+                current_hash = self._token_hash(current_token) if current_token else ""
+                conn.execute("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (session["user_id"], current_hash))
+            self._send(HTTPStatus.OK, {"ok": True})
+            return
         if path == "/api/logout":
             session = self._require_session(write=True)
             if session is None:
@@ -498,25 +532,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
         if path == "/api/profile":
-            full_name = str(body.get("fullName", "")).strip()[:80]
-            email = str(body.get("email", "")).strip().lower()[:254]
-            mobile = re.sub(r"[^0-9+() -]", "", str(body.get("mobile", "")))[:30].strip()
-            if not full_name or not EMAIL_RE.fullmatch(email):
+            raw_name = str(body.get("fullName", "")).strip()
+            raw_email = str(body.get("email", "")).strip()
+            raw_mobile = str(body.get("mobile", "")).strip()
+            full_name = raw_name[:80]
+            email = raw_email.lower()[:254]
+            mobile = re.sub(r"[^0-9+() -]", "", raw_mobile)[:30].strip()
+            currency_code = str(body.get("currencyCode", session["currency_code"])).strip().upper()
+            if not full_name or len(raw_name) > 80 or len(raw_email) > 254 or not EMAIL_RE.fullmatch(email):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a name and a valid email address."})
                 return
-            if mobile and len(re.sub(r"\D", "", mobile)) < 7:
+            if raw_mobile and (mobile != raw_mobile or not re.fullmatch(r"\+?[0-9][0-9 ()-]{5,28}", mobile) or not 7 <= len(re.sub(r"\D", "", mobile)) <= 15):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid phone number or leave it empty."})
+                return
+            if currency_code not in {"INR", "USD", "EUR", "GBP"}:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a supported currency."})
                 return
             try:
                 with db() as conn:
-                    result = conn.execute("UPDATE users SET full_name=?,email=?,mobile=? WHERE id=?", (full_name, email, mobile, session["user_id"]))
+                    result = conn.execute("UPDATE users SET full_name=?,email=?,mobile=?,currency_code=? WHERE id=?", (full_name, email, mobile, currency_code, session["user_id"]))
             except sqlite3.IntegrityError:
                 self._send(HTTPStatus.CONFLICT, {"error": "That email address is already in use."})
                 return
             if result.rowcount == 0:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Profile not found."})
                 return
-            self._send(HTTPStatus.OK, {"fullName": full_name, "email": email, "mobile": mobile})
+            self._send(HTTPStatus.OK, {"fullName": full_name, "email": email, "mobile": mobile, "currencyCode": currency_code})
             return
         match = re.fullmatch(r"/api/expenses/(\d+)", path)
         if not match:

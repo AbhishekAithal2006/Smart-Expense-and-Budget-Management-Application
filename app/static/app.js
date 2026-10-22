@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null };
-const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format((cents || 0) / 100);
+const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null, currencyCode: 'INR' };
+const currencySymbols = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
+const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: state.currencyCode, maximumFractionDigits: 2 }).format((cents || 0) / 100);
 const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const monthNow = () => localDate().slice(0, 7);
 
@@ -78,7 +79,8 @@ function showPage(page) {
 
 async function refresh() {
   try {
-    await Promise.all([loadSummary(), loadExpenses(), loadProfile()]);
+    await loadProfile();
+    await Promise.all([loadSummary(), loadExpenses()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
@@ -97,6 +99,9 @@ async function loadProfile() {
   $('#profile-name').value = profile.fullName;
   $('#profile-email').value = profile.email;
   $('#profile-mobile').value = profile.mobile;
+  state.currencyCode = currencySymbols[profile.currencyCode] ? profile.currencyCode : 'INR';
+  $('#profile-currency').value = state.currencyCode;
+  $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
   $('#profile-name-summary').textContent = profile.fullName || '—';
   $('#user-email').textContent = profile.email;
   $('#profile-display-name').textContent = profile.fullName || 'Your account';
@@ -106,6 +111,7 @@ async function loadProfile() {
   $('#profile-sign-in-method').textContent = loginMethod;
   const createdAt = profile.createdAt ? new Date(profile.createdAt) : null;
   $('#profile-created-at').textContent = !createdAt || Number.isNaN(createdAt.getTime()) ? '—' : createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  $('#password-section').classList.toggle('hidden', profile.loginMethod === 'Google');
   setProfileAvatar(profile.avatarUrl, profile.fullName);
 }
 
@@ -269,15 +275,50 @@ $('#profile-button').addEventListener('click', async () => {
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   $('#profile-error').textContent = '';
+  $('#profile-success').textContent = '';
   const data = Object.fromEntries(new FormData(event.currentTarget));
+  const mobile = data.mobile.trim();
+  const mobileDigits = mobile.replace(/\D/g, '').length;
+  if (mobile && (!/^\+?[0-9][0-9 ()-]{5,28}$/.test(mobile) || mobileDigits < 7 || mobileDigits > 15)) {
+    $('#profile-error').textContent = 'Enter a valid mobile number with 7–15 digits, or leave it empty.';
+    $('#profile-mobile').focus();
+    return;
+  }
   try {
     const profile = await api('/api/profile', { method: 'PATCH', body: JSON.stringify(data) });
+    state.currencyCode = profile.currencyCode;
+    $('#profile-currency').value = state.currencyCode;
+    $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
     $('#user-email').textContent = profile.email;
     $('#profile-name-summary').textContent = profile.fullName;
     $('#profile-display-name').textContent = profile.fullName;
     $('#profile-display-email').textContent = profile.email;
+    $('#profile-success').textContent = 'Profile saved successfully.';
     toast('Profile updated.');
+    await Promise.all([loadSummary(), loadExpenses()]);
   } catch (error) { $('#profile-error').textContent = error.message; }
+});
+
+$('#profile-currency').addEventListener('change', (event) => {
+  $('#amount-currency-symbol').textContent = currencySymbols[event.currentTarget.value] || currencySymbols.INR;
+});
+
+$('#password-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorNode = $('#password-error');
+  errorNode.textContent = '';
+  const data = Object.fromEntries(new FormData(form));
+  if (data.newPassword !== data.confirmPassword) {
+    errorNode.textContent = 'The new passwords do not match.';
+    $('#confirm-password').focus();
+    return;
+  }
+  try {
+    await api('/api/password', { method: 'POST', body: JSON.stringify(data) });
+    form.reset();
+    toast('Password updated. Other signed-in sessions were logged out.');
+  } catch (error) { errorNode.textContent = error.message; }
 });
 
 $('#filter-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await loadExpenses(); } catch (error) { toast(error.message); } });

@@ -87,7 +87,11 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(status, 200)
         status, history = self.request("/api/expenses")
         self.assertEqual(status, 200)
-        self.assertEqual(history["expenses"], [])
+        self.assertEqual(len(history["expenses"]), 1)
+        self.assertIsNotNone(history["expenses"][0]["deleted_at"])
+        status, summary = self.request("/api/summary")
+        self.assertEqual(status, 200)
+        self.assertEqual(summary["expenseCount"], 0)
 
         self.request("/api/logout", "POST")
         self.csrf = ""

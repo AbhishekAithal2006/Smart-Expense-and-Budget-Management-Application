@@ -69,6 +69,7 @@ def initialize() -> None:
                 spent_on TEXT NOT NULL,
                 payment_method TEXT NOT NULL DEFAULT '',
                 description TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS expenses_user_date ON expenses(user_id, spent_on DESC);
@@ -89,6 +90,9 @@ def initialize() -> None:
         if "avatar_url" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
+        expense_columns = {row["name"] for row in conn.execute("PRAGMA table_info(expenses)")}
+        if "deleted_at" not in expense_columns:
+            conn.execute("ALTER TABLE expenses ADD COLUMN deleted_at TEXT")
 
 
 def _password_hash(password: str, salt: bytes | None = None) -> bytes:
@@ -379,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                 clauses.append("substr(spent_on,1,7)=?")
                 params.append(month)
             with db() as conn:
-                rows = conn.execute(f"SELECT id,amount_cents,category,spent_on,payment_method,description FROM expenses WHERE {' AND '.join(clauses)} ORDER BY spent_on DESC,id DESC LIMIT 500", params).fetchall()
+                rows = conn.execute(f"SELECT id,amount_cents,category,spent_on,payment_method,description,deleted_at FROM expenses WHERE {' AND '.join(clauses)} ORDER BY spent_on DESC,id DESC LIMIT 500", params).fetchall()
             self._send(HTTPStatus.OK, {"expenses": [dict(r) for r in rows]})
             return
         if path.path == "/api/summary":
@@ -388,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             month = date.today().strftime("%Y-%m")
             with db() as conn:
-                summary = conn.execute("SELECT COALESCE(SUM(amount_cents),0) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND substr(spent_on,1,7)=?", (session["user_id"], month)).fetchone()
+                summary = conn.execute("SELECT COALESCE(SUM(amount_cents),0) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND deleted_at IS NULL AND substr(spent_on,1,7)=?", (session["user_id"], month)).fetchone()
             self._send(HTTPStatus.OK, {"month": month, "spentCents": summary["spent"], "expenseCount": summary["count"]})
             return
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -532,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a category."})
             return
         with db() as conn:
-            result = conn.execute("UPDATE expenses SET amount_cents=?,category=?,spent_on=?,payment_method=?,description=? WHERE id=? AND user_id=?", (amount, category, spent_on, str(body.get("paymentMethod", "")).strip()[:40], str(body.get("description", "")).strip()[:240], int(match.group(1)), session["user_id"]))
+            result = conn.execute("UPDATE expenses SET amount_cents=?,category=?,spent_on=?,payment_method=?,description=? WHERE id=? AND user_id=? AND deleted_at IS NULL", (amount, category, spent_on, str(body.get("paymentMethod", "")).strip()[:40], str(body.get("description", "")).strip()[:240], int(match.group(1)), session["user_id"]))
         if result.rowcount == 0:
             self._send(HTTPStatus.NOT_FOUND, {"error": "Expense not found."})
             return
@@ -551,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
         if session is None:
             return
         with db() as conn:
-            result = conn.execute("DELETE FROM expenses WHERE id=? AND user_id=?", (int(match.group(1)), session["user_id"]))
+            result = conn.execute("UPDATE expenses SET deleted_at=? WHERE id=? AND user_id=? AND deleted_at IS NULL", (datetime.now(timezone.utc).isoformat(), int(match.group(1)), session["user_id"]))
         if result.rowcount == 0:
             self._send(HTTPStatus.NOT_FOUND, {"error": "Expense not found."})
             return

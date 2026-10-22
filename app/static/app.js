@@ -99,6 +99,10 @@ async function loadProfile() {
   const profile = await api('/api/profile');
   $('#profile-name').value = profile.fullName;
   $('#profile-email').value = profile.email;
+  $('#profile-email-pending').classList.toggle('hidden', !profile.pendingEmail);
+  $('#profile-email-pending').textContent = profile.pendingEmail
+    ? `Email change waiting for verification. Check ${profile.pendingEmail}; your current email stays active until you verify it.`
+    : '';
   $('#profile-mobile').value = profile.mobile;
   state.currencyCode = normalizeCurrencyCode(profile.currencyCode);
   $('#profile-currency').value = state.currencyCode;
@@ -297,11 +301,18 @@ $('#profile-form').addEventListener('submit', async (event) => {
     $('#profile-currency').value = state.currencyCode;
     $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
     $('#user-email').textContent = profile.email;
+    $('#profile-email').value = profile.email;
     $('#profile-name-summary').textContent = profile.fullName;
     $('#profile-display-name').textContent = profile.fullName;
     $('#profile-display-email').textContent = profile.email;
-    $('#profile-success').textContent = 'Profile saved successfully.';
-    toast('Profile updated.');
+    $('#profile-email-pending').classList.toggle('hidden', !profile.emailVerificationPending);
+    $('#profile-email-pending').textContent = profile.emailVerificationPending
+      ? `Verification link sent to ${profile.pendingEmail}. Your current email remains active until you verify it.`
+      : '';
+    $('#profile-success').textContent = profile.emailVerificationPending
+      ? 'Profile details saved. Verify the new address to finish changing your email.'
+      : 'Profile saved successfully.';
+    toast(profile.emailVerificationPending ? 'Check your new email to verify the change.' : 'Profile updated.');
     await Promise.all([loadSummary(), loadExpenses()]);
   } catch (error) { $('#profile-error').textContent = error.message; }
 });
@@ -363,13 +374,27 @@ const googleErrors = {
   google_account_conflict: 'This email is already linked to a different Google account.',
   google_failed: 'Google sign-in failed. Please try again.'
 };
-const googleError = new URLSearchParams(window.location.search).get('auth_error');
-if (googleError) {
-  $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
-  window.history.replaceState(null, '', '/');
-}
+const pageParams = new URLSearchParams(window.location.search);
+const googleError = pageParams.get('auth_error');
+const emailVerified = pageParams.get('email_verified') === '1';
+const emailError = pageParams.get('email_error');
+if (googleError) $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
+const emailErrors = {
+  invalid: 'This verification link is invalid or has already been used.',
+  expired: 'This verification link has expired. Request another email change from your profile.',
+  already_used: 'That email address is already connected to another account.'
+};
+if (googleError || emailVerified || emailError) window.history.replaceState(null, '', '/');
 
 api('/api/me').then((session) => {
   state.csrf = session.csrfToken || '';
   if (session.authenticated) showApp(session.email);
+  if (emailVerified) {
+    if (session.authenticated) toast('Your email address has been verified.');
+    else $('#auth-error').textContent = 'Your email address is verified. Sign in with the new address.';
+  } else if (emailError) {
+    const message = emailErrors[emailError] || emailErrors.invalid;
+    if (session.authenticated) toast(message);
+    else $('#auth-error').textContent = message;
+  }
 }).catch(() => {});

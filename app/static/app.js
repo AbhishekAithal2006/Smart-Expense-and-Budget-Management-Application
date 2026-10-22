@@ -278,10 +278,16 @@ $('#profile-form').addEventListener('submit', async (event) => {
   $('#profile-error').textContent = '';
   $('#profile-success').textContent = '';
   const data = Object.fromEntries(new FormData(event.currentTarget));
+  const email = data.email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    $('#profile-error').textContent = 'Enter a valid email address.';
+    $('#profile-email').focus();
+    return;
+  }
   const mobile = data.mobile.trim();
   const mobileDigits = mobile.replace(/\D/g, '').length;
-  if (mobile && (!/^\+?[0-9][0-9 ()-]{5,28}$/.test(mobile) || mobileDigits < 7 || mobileDigits > 15)) {
-    $('#profile-error').textContent = 'Enter a valid mobile number with 7–15 digits, or leave it empty.';
+  if (mobile && (!/^\+?[0-9][0-9 ()-]{5,28}$/.test(mobile) || mobileDigits < 10 || mobileDigits > 15)) {
+    $('#profile-error').textContent = 'Enter a valid mobile number with 10–15 digits, or leave it empty.';
     $('#profile-mobile').focus();
     return;
   }
@@ -298,6 +304,16 @@ $('#profile-form').addEventListener('submit', async (event) => {
     toast('Profile updated.');
     await Promise.all([loadSummary(), loadExpenses()]);
   } catch (error) { $('#profile-error').textContent = error.message; }
+});
+
+['#profile-name', '#profile-email', '#profile-mobile', '#profile-currency'].forEach((selector) => {
+  const field = $(selector);
+  const clearProfileFeedback = () => {
+    $('#profile-error').textContent = '';
+    $('#profile-success').textContent = '';
+  };
+  field.addEventListener('input', clearProfileFeedback);
+  field.addEventListener('change', clearProfileFeedback);
 });
 
 $('#profile-currency').addEventListener('change', (event) => {

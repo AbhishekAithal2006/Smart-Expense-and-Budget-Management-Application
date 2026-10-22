@@ -26,7 +26,11 @@ HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 SESSION_TTL = 60 * 60 * 24 * 7
 SECRET = os.environ.get("SESSION_SECRET", "").encode("utf-8") or b"local-development-secret-change-before-deployment"
-EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", f"http://{HOST}:{PORT}/auth/google/callback")
@@ -39,6 +43,18 @@ def db() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def _valid_email(value: str) -> bool:
+    if not EMAIL_RE.fullmatch(value) or ".." in value:
+        return False
+    local, domain = value.rsplit("@", 1)
+    return (
+        len(local) <= 64
+        and not local.startswith(".")
+        and not local.endswith(".")
+        and len(domain.rsplit(".", 1)[-1]) >= 2
+    )
 
 
 def initialize() -> None:
@@ -247,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             google_sub = str(identity.get("sub", ""))[:255]
             avatar_url = _google_avatar_url(identity.get("picture"))
             email_verified = identity.get("email_verified") is True or identity.get("email_verified") == "true"
-            if not email_verified or not EMAIL_RE.fullmatch(email) or not google_sub:
+            if not email_verified or not _valid_email(email) or not google_sub:
                 raise ValueError("Google identity was missing a verified email")
             full_name = str(identity.get("name", "")).strip()[:80] or email.split("@", 1)[0]
             with db() as conn:
@@ -415,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
             full_name = str(body.get("fullName", "")).strip()[:80]
             email = str(body.get("email", "")).strip().lower()[:254]
             password = str(body.get("password", ""))
-            if not EMAIL_RE.fullmatch(email) or len(password) < 10 or len(password) > 128:
+            if not _valid_email(email) or len(password) < 10 or len(password) > 128:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid email and a password of at least 10 characters."})
                 return
             if path == "/api/register" and not full_name:
@@ -539,11 +555,11 @@ class Handler(BaseHTTPRequestHandler):
             email = raw_email.lower()[:254]
             mobile = re.sub(r"[^0-9+() -]", "", raw_mobile)[:30].strip()
             currency_code = str(body.get("currencyCode", session["currency_code"])).strip().upper()
-            if not full_name or len(raw_name) > 80 or len(raw_email) > 254 or not EMAIL_RE.fullmatch(email):
+            if not full_name or len(raw_name) > 80 or len(raw_email) > 254 or not _valid_email(email):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a name and a valid email address."})
                 return
-            if raw_mobile and (mobile != raw_mobile or not re.fullmatch(r"\+?[0-9][0-9 ()-]{5,28}", mobile) or not 7 <= len(re.sub(r"\D", "", mobile)) <= 15):
-                self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid phone number or leave it empty."})
+            if raw_mobile and (mobile != raw_mobile or not re.fullmatch(r"\+?[0-9][0-9 ()-]{5,28}", mobile) or not 10 <= len(re.sub(r"\D", "", mobile)) <= 15):
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid mobile number with 10–15 digits, or leave it empty."})
                 return
             if currency_code not in {"INR", "USD", "EUR", "GBP"}:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a supported currency."})

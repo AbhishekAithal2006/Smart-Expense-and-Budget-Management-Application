@@ -52,7 +52,7 @@
       <section class="content-card form-card" id="expense-form-card">
         <div class="section-heading"><div><p class="eyebrow">QUICK ENTRY</p><h2>Add an expense</h2><p class="section-copy">A few details now make the month easier to understand later.</p></div><span class="section-icon">＋</span></div>
         <form id="expense-form" class="expense-form">
-          <div class="field"><label for="expense-amount">Amount</label><div class="amount-input"><span>₹</span><input id="expense-amount" name="amount" type="number" inputmode="decimal" min="0.01" max="100000000" step="0.01" placeholder="0.00" required></div></div>
+          <div class="field"><label for="expense-amount">Amount</label><div class="amount-input"><span id="amount-currency-symbol">₹</span><input id="expense-amount" name="amount" type="number" inputmode="decimal" min="0.01" max="100000000" step="0.01" placeholder="0.00" required></div></div>
           <div class="field"><label for="expense-category">Category</label><select id="expense-category" name="category" required><option value="">Choose category</option><option>Food</option><option>Travel</option><option>Shopping</option><option>Medical</option><option>Entertainment</option><option>Home</option><option>Utilities</option><option>Other</option></select></div>
           <div class="field"><label for="expense-date">Date</label><input id="expense-date" name="date" type="date" required></div>
           <div class="field"><label for="expense-payment">Payment method <span class="optional">Optional</span></label><select id="expense-payment" name="paymentMethod"><option value="">Choose method</option><option>UPI</option><option>Card</option><option>Cash</option><option>Bank transfer</option><option>Other</option></select></div>
@@ -77,15 +77,26 @@
           <div class="profile-identity-copy"><h2 id="profile-display-name">Your account</h2><p id="profile-display-email"></p><span id="profile-login-badge" class="profile-login-badge">Email and password</span></div>
         </div>
         <form id="profile-form" class="profile-form">
-          <div class="field"><label for="profile-name">Full name</label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required></div>
-          <div class="field"><label for="profile-email">Email address</label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required></div>
-          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30"></div>
-          <div class="form-actions"><p id="profile-error" class="form-error" role="alert"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
+          <div class="field"><label for="profile-name">Full name <span class="required-marker" aria-hidden="true">*</span></label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required aria-describedby="profile-error"></div>
+          <div class="field"><label for="profile-email">Email address <span class="required-marker" aria-hidden="true">*</span></label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required aria-describedby="profile-error"></div>
+          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30" pattern="\+?[0-9][0-9 ()-]{5,28}" aria-describedby="profile-error"></div>
+          <div class="field"><label for="profile-currency">Preferred currency</label><select id="profile-currency" name="currencyCode"><option value="INR">INR — Indian Rupee (₹)</option><option value="USD">USD — US Dollar ($)</option><option value="EUR">EUR — Euro (€)</option><option value="GBP">GBP — British Pound (£)</option></select></div>
+          <div class="form-actions"><p id="profile-error" class="form-error" role="alert" aria-live="polite"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
         </form>
+        <p id="profile-success" class="form-success" role="status" aria-live="polite" aria-atomic="true"></p>
         <div class="account-details" aria-label="Account information">
           <div class="account-detail"><span>Sign-in method</span><strong id="profile-sign-in-method">Email and password</strong></div>
           <div class="account-detail"><span>Member since</span><strong id="profile-created-at">—</strong></div>
         </div>
+        <section id="password-section" class="password-section" aria-labelledby="password-title">
+          <div class="section-heading"><div><h2 id="password-title">Change password</h2><p class="section-copy">Choose a new password for your account.</p></div></div>
+          <form id="password-form" class="password-form">
+            <div class="field"><label for="current-password">Current password</label><input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required></div>
+            <div class="field"><label for="new-password">New password</label><input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required><span class="field-hint">Use 10–128 characters.</span></div>
+            <div class="field"><label for="confirm-password">Confirm new password</label><input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" minlength="10" maxlength="128" required></div>
+            <div class="form-actions"><p id="password-error" class="form-error" role="alert" aria-live="polite"></p><button class="button button-outline" type="submit">Update password</button></div>
+          </form>
+        </section>
       </section>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

@@ -79,7 +79,7 @@
         <form id="profile-form" class="profile-form">
           <div class="field"><label for="profile-name">Full name <span class="required-marker" aria-hidden="true">*</span></label><input id="profile-name" name="fullName" type="text" autocomplete="name" maxlength="80" required aria-describedby="profile-error"></div>
           <div class="field"><label for="profile-email">Email address <span class="required-marker" aria-hidden="true">*</span></label><input id="profile-email" name="email" type="email" autocomplete="email" maxlength="254" required aria-describedby="profile-error"></div>
-          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" autocomplete="tel" maxlength="30" pattern="\+?[0-9][0-9 ()-]{5,28}" aria-describedby="profile-error"></div>
+          <div class="field"><label for="profile-mobile">Mobile <span class="optional">Optional</span></label><input id="profile-mobile" name="mobile" type="tel" inputmode="numeric" autocomplete="tel-national" maxlength="10" minlength="10" pattern="[0-9]{10}" aria-describedby="profile-error"></div>
           <div class="field"><label for="profile-currency">Preferred currency</label><select id="profile-currency" name="currencyCode"><option value="INR">INR — Indian Rupee (₹)</option><option value="USD">USD — US Dollar ($)</option><option value="EUR">EUR — Euro (€)</option><option value="GBP">GBP — British Pound (£)</option></select></div>
           <div class="form-actions"><p id="profile-error" class="form-error" role="alert" aria-live="polite"></p><button class="button button-primary" type="submit">Save profile <span aria-hidden="true">→</span></button></div>
         </form>

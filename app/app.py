@@ -553,13 +553,13 @@ class Handler(BaseHTTPRequestHandler):
             raw_mobile = str(body.get("mobile", "")).strip()
             full_name = raw_name[:80]
             email = raw_email.lower()[:254]
-            mobile = raw_mobile
+            mobile = re.sub(r"[^0-9+() -]", "", raw_mobile)[:30].strip()
             currency_code = str(body.get("currencyCode", session["currency_code"])).strip().upper()
             if not full_name or len(raw_name) > 80 or len(raw_email) > 254 or not _valid_email(email):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a name and a valid email address."})
                 return
-            if raw_mobile and not re.fullmatch(r"[0-9]{10}", mobile):
-                self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid 10-digit mobile number, or leave it empty."})
+            if raw_mobile and (mobile != raw_mobile or not re.fullmatch(r"\+?[0-9][0-9 ()-]{5,28}", mobile) or not 10 <= len(re.sub(r"\D", "", mobile)) <= 15):
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid mobile number with 10–15 digits, or leave it empty."})
                 return
             if currency_code not in {"INR", "USD", "EUR", "GBP"}:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a supported currency."})

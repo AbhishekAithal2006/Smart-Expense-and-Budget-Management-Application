@@ -285,8 +285,9 @@ $('#profile-form').addEventListener('submit', async (event) => {
     return;
   }
   const mobile = data.mobile.trim();
-  if (mobile && !/^[0-9]{10}$/.test(mobile)) {
-    $('#profile-error').textContent = 'Enter a valid 10-digit mobile number, or leave it empty.';
+  const mobileDigits = mobile.replace(/\D/g, '').length;
+  if (mobile && (!/^\+?[0-9][0-9 ()-]{5,28}$/.test(mobile) || mobileDigits < 10 || mobileDigits > 15)) {
+    $('#profile-error').textContent = 'Enter a valid mobile number with 10–15 digits, or leave it empty.';
     $('#profile-mobile').focus();
     return;
   }

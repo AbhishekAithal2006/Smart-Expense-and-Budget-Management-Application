@@ -53,7 +53,7 @@
         <div class="section-heading"><div><p class="eyebrow">QUICK ENTRY</p><h2>Add an expense</h2><p class="section-copy">A few details now make the month easier to understand later.</p></div><span class="section-icon">＋</span></div>
         <form id="expense-form" class="expense-form">
           <div class="field"><label for="expense-amount">Amount</label><div class="amount-input"><span id="amount-currency-symbol">₹</span><input id="expense-amount" name="amount" type="number" inputmode="decimal" min="0.01" max="100000000" step="0.01" placeholder="0.00" required></div></div>
-          <div class="field"><label for="expense-category">Category</label><select id="expense-category" name="category" required><option value="">Choose category</option><option>Food</option><option>Travel</option><option>Shopping</option><option>Medical</option><option>Entertainment</option><option>Home</option><option>Utilities</option><option>Other</option></select></div>
+          <div class="field"><label for="expense-category">Category</label><select id="expense-category" name="category" required><option value="">Choose category</option></select></div>
           <div class="field"><label for="expense-date">Date</label><input id="expense-date" name="date" type="date" required></div>
           <div class="field"><label for="expense-payment">Payment method <span class="optional">Optional</span></label><select id="expense-payment" name="paymentMethod"><option value="">Choose method</option><option>UPI</option><option>Card</option><option>Cash</option><option>Bank transfer</option><option>Other</option></select></div>
           <div class="field field-description"><label for="expense-description">Description <span class="optional">Optional</span></label><input id="expense-description" name="description" type="text" maxlength="240" placeholder="What was it for?"></div>
@@ -61,9 +61,19 @@
         </form>
       </section>
 
+      <section class="content-card categories-card" aria-labelledby="categories-title">
+        <div class="section-heading"><div><p class="eyebrow">MAKE IT YOURS</p><h2 id="categories-title">Expense categories</h2><p class="section-copy">Use the built-in categories or add labels that fit your spending.</p></div></div>
+        <form id="category-form" class="category-form">
+          <div class="field"><label for="category-name">New category</label><input id="category-name" name="name" type="text" maxlength="40" placeholder="For example, Pet care" required aria-describedby="category-feedback"></div>
+          <button class="button button-outline" type="submit">Add category</button>
+          <p id="category-feedback" class="form-error" role="status" aria-live="polite"></p>
+        </form>
+        <ul id="custom-category-list" class="custom-category-list" aria-label="Your custom categories"></ul>
+      </section>
+
       <section class="content-card history-card">
         <div class="section-heading history-heading"><div><p class="eyebrow">YOUR ACTIVITY</p><h2>Expense history</h2><p class="section-copy">Search, filter, and keep your records up to date.</p></div><span id="expense-count" class="count-badge">0 items</span></div>
-        <form id="filter-form" class="filters"><label class="search-box" for="search-input"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Search expenses" maxlength="100"><kbd>⌘ K</kbd></label><select id="category-filter" aria-label="Filter by category"><option value="">All categories</option><option>Food</option><option>Travel</option><option>Shopping</option><option>Medical</option><option>Entertainment</option><option>Home</option><option>Utilities</option><option>Other</option></select><input id="month-filter" type="month" aria-label="Filter by month"><button class="button button-outline" type="submit">Filter</button><button id="clear-filters" class="text-button" type="button">Clear</button></form>
+        <form id="filter-form" class="filters"><label class="search-box" for="search-input"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Search expenses" maxlength="100"><kbd>⌘ K</kbd></label><select id="category-filter" aria-label="Filter by category"><option value="">All categories</option></select><input id="month-filter" type="month" aria-label="Filter by month"><button class="button button-outline" type="submit">Filter</button><button id="clear-filters" class="text-button" type="button">Clear</button></form>
         <div class="table-wrap"><table><thead><tr><th>EXPENSE</th><th>DATE</th><th>PAYMENT</th><th class="align-right">AMOUNT</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="expense-rows"></tbody></table></div>
         <div id="empty-state" class="empty-state"><span class="empty-icon">↗</span><h3>No expenses here yet</h3><p>Add your first expense above. Your history will build from there.</p></div>
       </section>

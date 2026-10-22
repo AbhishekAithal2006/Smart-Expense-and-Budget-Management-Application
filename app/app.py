@@ -8,10 +8,13 @@ import json
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import sqlite3
 import sys
 import time
 from datetime import date, datetime, timezone
+from email.message import EmailMessage
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +37,13 @@ EMAIL_RE = re.compile(
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", f"http://{HOST}:{PORT}/auth/google/callback")
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USERNAME)
+APP_BASE_URL = os.environ.get("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")
+EMAIL_CHANGE_TTL = 60 * 60
 
 
 def db() -> sqlite3.Connection:
@@ -55,6 +65,33 @@ def _valid_email(value: str) -> bool:
         and not local.endswith(".")
         and len(domain.rsplit(".", 1)[-1]) >= 2
     )
+
+
+def _send_email_change_verification(address: str, token: str) -> None:
+    if not SMTP_HOST or not SMTP_FROM or bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
+        raise RuntimeError("Email delivery is not configured.")
+    link = f"{APP_BASE_URL}/auth/email/verify?{urlencode({'token': token})}"
+    message = EmailMessage()
+    message["Subject"] = "Verify your email address"
+    message["From"] = SMTP_FROM
+    message["To"] = address
+    message.set_content(
+        "A request was made to change the email address on your Smart Expense account.\n\n"
+        f"Verify the new address by opening this one-time link within 1 hour:\n{link}\n\n"
+        "If you did not request this change, you can ignore this message."
+    )
+    context = ssl.create_default_context()
+    if SMTP_PORT == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15, context=context) as server:
+            if SMTP_USERNAME:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls(context=context)
+            if SMTP_USERNAME:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(message)
 
 
 def initialize() -> None:
@@ -94,6 +131,13 @@ def initialize() -> None:
                 email TEXT PRIMARY KEY COLLATE NOCASE,
                 failures INTEGER NOT NULL DEFAULT 0,
                 blocked_until INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS email_change_requests (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                new_email TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
             );
             """
         )
@@ -149,9 +193,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "SmartExpense/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
-        # OAuth callbacks carry one-time codes in their query string; never log them.
-        if urlparse(self.path).path == "/auth/google/callback":
-            super().log_message("OAuth callback query redacted")
+        # Authentication callbacks carry one-time secrets in their query strings.
+        if urlparse(self.path).path in ("/auth/google/callback", "/auth/email/verify"):
+            super().log_message("Authentication callback query redacted")
             return
         # Do not log request bodies, credentials, or session identifiers.
         super().log_message(fmt, *args)
@@ -332,6 +376,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path)
+        if path.path == "/auth/email/verify":
+            token = parse_qs(path.query).get("token", [""])[0]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", token):
+                self._redirect("/?email_error=invalid")
+                return
+            now = int(time.time())
+            outcome = "invalid"
+            with db() as conn:
+                request = conn.execute(
+                    "SELECT user_id,new_email,expires_at FROM email_change_requests WHERE token_hash=?",
+                    (self._token_hash(token),),
+                ).fetchone()
+                if request is not None and request["expires_at"] < now:
+                    conn.execute("DELETE FROM email_change_requests WHERE user_id=?", (request["user_id"],))
+                    outcome = "expired"
+                elif request is not None:
+                    try:
+                        conn.execute("UPDATE users SET email=? WHERE id=?", (request["new_email"], request["user_id"]))
+                    except sqlite3.IntegrityError:
+                        outcome = "already_used"
+                    else:
+                        outcome = "verified"
+                    conn.execute("DELETE FROM email_change_requests WHERE user_id=?", (request["user_id"],))
+            self._redirect("/?email_verified=1" if outcome == "verified" else f"/?email_error={outcome}")
+            return
         if path.path == "/auth/google":
             self._start_google_auth()
             return
@@ -375,11 +444,16 @@ class Handler(BaseHTTPRequestHandler):
             session = self._require_session()
             if session is None:
                 return
+            with db() as conn:
+                pending = conn.execute(
+                    "SELECT new_email FROM email_change_requests WHERE user_id=? AND expires_at>?",
+                    (session["user_id"], int(time.time())),
+                ).fetchone()
             self._send(HTTPStatus.OK, {
                 "fullName": session["full_name"], "email": session["email"], "mobile": session["mobile"],
                 "currencyCode": session["currency_code"],
                 "avatarUrl": session["avatar_url"], "loginMethod": "Google" if session["google_sub"] else "Email and password",
-                "createdAt": session["created_at"],
+                "createdAt": session["created_at"], "pendingEmail": pending["new_email"] if pending else "",
             })
             return
         if path.path == "/api/expenses":
@@ -564,16 +638,45 @@ class Handler(BaseHTTPRequestHandler):
             if currency_code not in {"INR", "USD", "EUR", "GBP"}:
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a supported currency."})
                 return
+            email_changed = email != session["email"].lower()
+            pending_email = ""
+            if email_changed:
+                with db() as conn:
+                    existing = conn.execute("SELECT id FROM users WHERE email=? COLLATE NOCASE AND id<>?", (email, session["user_id"])).fetchone()
+                    if existing:
+                        self._send(HTTPStatus.CONFLICT, {"error": "That email address is already in use."})
+                        return
+                    token = secrets.token_urlsafe(32)
+                    token_hash = self._token_hash(token)
+                    conn.execute("DELETE FROM email_change_requests WHERE user_id=?", (session["user_id"],))
+                    conn.execute(
+                        "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
+                        (session["user_id"], email, token_hash, int(time.time()) + EMAIL_CHANGE_TTL, int(time.time())),
+                    )
+                try:
+                    _send_email_change_verification(email, token)
+                except Exception:
+                    with db() as conn:
+                        conn.execute("DELETE FROM email_change_requests WHERE user_id=? AND token_hash=?", (session["user_id"], token_hash))
+                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "We couldn't send the verification email. Check the app's SMTP configuration and try again."})
+                    return
+                pending_email = email
+            else:
+                with db() as conn:
+                    conn.execute("DELETE FROM email_change_requests WHERE user_id=?", (session["user_id"],))
             try:
                 with db() as conn:
-                    result = conn.execute("UPDATE users SET full_name=?,email=?,mobile=?,currency_code=? WHERE id=?", (full_name, email, mobile, currency_code, session["user_id"]))
+                    result = conn.execute("UPDATE users SET full_name=?,mobile=?,currency_code=? WHERE id=?", (full_name, mobile, currency_code, session["user_id"]))
             except sqlite3.IntegrityError:
-                self._send(HTTPStatus.CONFLICT, {"error": "That email address is already in use."})
+                self._send(HTTPStatus.CONFLICT, {"error": "Your profile could not be saved."})
                 return
             if result.rowcount == 0:
                 self._send(HTTPStatus.NOT_FOUND, {"error": "Profile not found."})
                 return
-            self._send(HTTPStatus.OK, {"fullName": full_name, "email": email, "mobile": mobile, "currencyCode": currency_code})
+            self._send(HTTPStatus.OK, {
+                "fullName": full_name, "email": session["email"], "mobile": mobile, "currencyCode": currency_code,
+                "emailVerificationPending": bool(pending_email), "pendingEmail": pending_email,
+            })
             return
         match = re.fullmatch(r"/api/expenses/(\d+)", path)
         if not match:

@@ -17,7 +17,7 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and create an account. SQLit
 
 - Register with a name, email, and password; sign in and out.
 - Sign in or create an account with Google using the OAuth authorization-code flow.
-- Update name, email, and optional mobile number in the profile.
+- Update name and optional mobile number in the profile; email changes take effect only after the new address is verified.
 - Add, edit, delete, search, and filter personal expenses.
 - View a monthly spending summary and transaction history.
 - Use a responsive interface with clear form validation and feedback.
@@ -52,6 +52,22 @@ python3 app.py
 ```
 
 The callback URI must match the value registered in Google Cloud Console. For a deployed app, use its HTTPS callback URL and set `SECURE_COOKIE=1`. The app asks Google only for OpenID Connect identity, email, and basic profile scopes. It links a verified Google email to an existing account with that email; Google-only accounts receive a randomly generated local password that is never shown or stored in plaintext.
+
+## Email-change verification setup
+
+Changing the profile email sends a one-time verification link to the new address. The current address remains active until the link is opened. Links expire after one hour. Configure an SMTP provider before enabling email changes:
+
+```sh
+SMTP_HOST='smtp.example.com' \
+SMTP_PORT='587' \
+SMTP_USERNAME='your-smtp-user' \
+SMTP_PASSWORD='your-smtp-password' \
+SMTP_FROM='Smart Expense <noreply@example.com>' \
+APP_BASE_URL='http://127.0.0.1:8000' \
+python3 app.py
+```
+
+Port `587` uses STARTTLS; port `465` uses SMTP over TLS. For a deployed app, set `APP_BASE_URL` to its public HTTPS origin. Keep SMTP credentials in environment secrets and out of Git. Without SMTP configuration, the app will not change the email and will show an error when a user requests an email change.
 
 ## Deployment note
 

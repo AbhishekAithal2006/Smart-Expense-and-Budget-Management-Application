@@ -27,7 +27,7 @@ PORT = int(os.environ.get("PORT", "8000"))
 SESSION_TTL = 60 * 60 * 24 * 7
 SECRET = os.environ.get("SESSION_SECRET", "").encode("utf-8") or b"local-development-secret-change-before-deployment"
 EMAIL_RE = re.compile(
-    r"^[A-Za-z0-9.!#$%&'*+/=?^_\`{|}~-]+@"
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
 )

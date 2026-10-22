@@ -81,11 +81,66 @@ function showPage(page) {
 async function refresh() {
   try {
     await loadProfile();
-    await Promise.all([loadSummary(), loadExpenses()]);
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
   }
+}
+
+async function loadCategories() {
+  const data = await api('/api/categories');
+  const expenseSelect = $('#expense-category');
+  const filterSelect = $('#category-filter');
+  const selectedExpense = expenseSelect.value;
+  const selectedFilter = filterSelect.value;
+  expenseSelect.replaceChildren(new Option('Choose category', ''));
+  filterSelect.replaceChildren(new Option('All categories', ''));
+  for (const category of [...data.predefined, ...data.custom.map((item) => item.name)]) {
+    expenseSelect.add(new Option(category, category));
+    filterSelect.add(new Option(category, category));
+  }
+  if ([...expenseSelect.options].some((option) => option.value === selectedExpense)) expenseSelect.value = selectedExpense;
+  if ([...filterSelect.options].some((option) => option.value === selectedFilter)) filterSelect.value = selectedFilter;
+
+  const list = $('#custom-category-list');
+  list.replaceChildren();
+  for (const category of data.custom) {
+    const item = element('li', 'category-item');
+    item.append(element('span', 'category-item-name', category.name));
+    const edit = element('button', 'row-action', 'Edit');
+    edit.type = 'button';
+    edit.setAttribute('aria-label', `Rename ${category.name} category`);
+    edit.addEventListener('click', () => startCategoryEdit(item, category));
+    item.append(edit);
+    list.append(item);
+  }
+}
+
+function startCategoryEdit(item, category) {
+  item.replaceChildren();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 40;
+  input.value = category.name;
+  input.setAttribute('aria-label', `New name for ${category.name}`);
+  const save = element('button', 'row-action', 'Save');
+  save.type = 'button';
+  const cancel = element('button', 'row-action', 'Cancel');
+  cancel.type = 'button';
+  save.addEventListener('click', async () => {
+    $('#category-feedback').textContent = '';
+    try {
+      await api(`/api/categories/${category.id}`, { method: 'PATCH', body: JSON.stringify({ name: input.value }) });
+      $('#category-feedback').textContent = 'Category updated. Matching expenses were updated too.';
+      await loadCategories();
+      await loadExpenses();
+    } catch (error) { $('#category-feedback').textContent = error.message; }
+  });
+  cancel.addEventListener('click', () => loadCategories().catch((error) => toast(error.message)));
+  item.append(input, save, cancel);
+  input.focus();
+  input.select();
 }
 
 async function loadSummary() {
@@ -268,6 +323,19 @@ $('#expense-form').addEventListener('submit', async (event) => {
   } catch (error) { $('#expense-error').textContent = error.message; }
 });
 
+$('#category-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = $('#category-name');
+  const feedback = $('#category-feedback');
+  feedback.textContent = '';
+  try {
+    await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: input.value }) });
+    input.value = '';
+    feedback.textContent = 'Category added. It is now available when recording expenses.';
+    await loadCategories();
+  } catch (error) { feedback.textContent = error.message; }
+});
+
 $('#profile-button').addEventListener('click', async () => {
   const nextPage = state.page === 'profile' ? 'home' : 'profile';
   showPage(nextPage);
@@ -374,11 +442,13 @@ const googleErrors = {
   google_account_conflict: 'This email is already linked to a different Google account.',
   google_failed: 'Google sign-in failed. Please try again.'
 };
+const googleError = new URLSearchParams(window.location.search).get('auth_error');
 const pageParams = new URLSearchParams(window.location.search);
-const googleError = pageParams.get('auth_error');
 const emailVerified = pageParams.get('email_verified') === '1';
 const emailError = pageParams.get('email_error');
-if (googleError) $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
+if (googleError) {
+  $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
+}
 const emailErrors = {
   invalid: 'This verification link is invalid or has already been used.',
   expired: 'This verification link has expired. Request another email change from your profile.',

@@ -13,8 +13,8 @@ import ssl
 import sqlite3
 import sys
 import time
-from datetime import date, datetime, timezone
 from email.message import EmailMessage
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +44,8 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USERNAME)
 APP_BASE_URL = os.environ.get("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")
 EMAIL_CHANGE_TTL = 60 * 60
+PREDEFINED_CATEGORIES = ("Food", "Travel", "Shopping", "Medical", "Entertainment", "Home", "Utilities", "Other")
+CATEGORY_NAME_RE = re.compile(r"^[\w][\w &'()+,.-]{0,39}$", re.UNICODE)
 
 
 def db() -> sqlite3.Connection:
@@ -127,6 +129,13 @@ def initialize() -> None:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS expenses_user_date ON expenses(user_id, spent_on DESC);
+            CREATE TABLE IF NOT EXISTS user_categories (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL COLLATE NOCASE,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, name)
+            );
             CREATE TABLE IF NOT EXISTS login_attempts (
                 email TEXT PRIMARY KEY COLLATE NOCASE,
                 failures INTEGER NOT NULL DEFAULT 0,
@@ -189,11 +198,32 @@ def _same_origin_request(handler: BaseHTTPRequestHandler) -> bool:
     return parsed.scheme in ("http", "https") and parsed.netloc.lower() == handler.headers.get("Host", "").lower()
 
 
+def _valid_category_name(value: object) -> str | None:
+    name = str(value or "").strip()
+    if len(name) > 40 or not CATEGORY_NAME_RE.fullmatch(name):
+        return None
+    if name.casefold() in {category.casefold() for category in PREDEFINED_CATEGORIES}:
+        return None
+    return name
+
+
+def _resolve_category(conn: sqlite3.Connection, user_id: int, value: object) -> str | None:
+    name = str(value or "").strip()
+    predefined = {category.casefold(): category for category in PREDEFINED_CATEGORIES}
+    if name.casefold() in predefined:
+        return predefined[name.casefold()]
+    row = conn.execute(
+        "SELECT name FROM user_categories WHERE user_id=? AND name=? COLLATE NOCASE",
+        (user_id, name),
+    ).fetchone()
+    return row["name"] if row else None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SmartExpense/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
-        # Authentication callbacks carry one-time secrets in their query strings.
+        # Authentication links and OAuth callbacks carry one-time secrets.
         if urlparse(self.path).path in ("/auth/google/callback", "/auth/email/verify"):
             super().log_message("Authentication callback query redacted")
             return
@@ -456,6 +486,20 @@ class Handler(BaseHTTPRequestHandler):
                 "createdAt": session["created_at"], "pendingEmail": pending["new_email"] if pending else "",
             })
             return
+        if path.path == "/api/categories":
+            session = self._require_session()
+            if session is None:
+                return
+            with db() as conn:
+                custom = conn.execute(
+                    "SELECT id,name FROM user_categories WHERE user_id=? ORDER BY name COLLATE NOCASE",
+                    (session["user_id"],),
+                ).fetchall()
+            self._send(HTTPStatus.OK, {
+                "predefined": list(PREDEFINED_CATEGORIES),
+                "custom": [dict(row) for row in custom],
+            })
+            return
         if path.path == "/api/expenses":
             session = self._require_session()
             if session is None:
@@ -543,6 +587,25 @@ class Handler(BaseHTTPRequestHandler):
                 profile = conn.execute("SELECT full_name FROM users WHERE id=?", (user_id,)).fetchone()
             self._send(HTTPStatus.OK, {"email": email, "fullName": profile["full_name"], "csrfToken": csrf}, {"Set-Cookie": self._cookie_header(token)})
             return
+        if path == "/api/categories":
+            session = self._require_session(write=True)
+            if session is None:
+                return
+            name = _valid_category_name(body.get("name"))
+            if name is None:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Use a unique category name with 1–40 letters, numbers, spaces, or basic punctuation. Predefined names are reserved."})
+                return
+            try:
+                with db() as conn:
+                    cursor = conn.execute(
+                        "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)",
+                        (session["user_id"], name, datetime.now(timezone.utc).isoformat()),
+                    )
+            except sqlite3.IntegrityError:
+                self._send(HTTPStatus.CONFLICT, {"error": "A category with that name already exists."})
+                return
+            self._send(HTTPStatus.CREATED, {"id": cursor.lastrowid, "name": name})
+            return
         if path == "/api/password":
             session = self._require_session(write=True)
             if session is None:
@@ -596,13 +659,13 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError, OverflowError):
                 self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid date and an amount greater than zero."})
                 return
-            category = str(body.get("category", "")).strip()[:60]
-            if not category:
-                self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a category."})
-                return
             payment = str(body.get("paymentMethod", "")).strip()[:40]
             description = str(body.get("description", "")).strip()[:240]
             with db() as conn:
+                category = _resolve_category(conn, session["user_id"], body.get("category"))
+                if category is None:
+                    self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a predefined category or create a custom category first."})
+                    return
                 conn.execute("INSERT INTO expenses(user_id,amount_cents,category,spent_on,payment_method,description,created_at) VALUES(?,?,?,?,?,?,?)", (session["user_id"], amount, category, spent_on, payment, description, datetime.now(timezone.utc).isoformat()))
             self._send(HTTPStatus.CREATED, {"ok": True})
             return
@@ -678,6 +741,36 @@ class Handler(BaseHTTPRequestHandler):
                 "emailVerificationPending": bool(pending_email), "pendingEmail": pending_email,
             })
             return
+        category_match = re.fullmatch(r"/api/categories/(\d+)", path)
+        if category_match:
+            name = _valid_category_name(body.get("name"))
+            if name is None:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Use a unique category name with 1–40 letters, numbers, spaces, or basic punctuation. Predefined names are reserved."})
+                return
+            category_id = int(category_match.group(1))
+            try:
+                with db() as conn:
+                    existing = conn.execute(
+                        "SELECT name FROM user_categories WHERE id=? AND user_id=?",
+                        (category_id, session["user_id"]),
+                    ).fetchone()
+                    if existing is None:
+                        self._send(HTTPStatus.NOT_FOUND, {"error": "Custom category not found."})
+                        return
+                    previous_name = existing["name"]
+                    conn.execute(
+                        "UPDATE user_categories SET name=? WHERE id=? AND user_id=?",
+                        (name, category_id, session["user_id"]),
+                    )
+                    conn.execute(
+                        "UPDATE expenses SET category=? WHERE user_id=? AND category=?",
+                        (name, session["user_id"], previous_name),
+                    )
+            except sqlite3.IntegrityError:
+                self._send(HTTPStatus.CONFLICT, {"error": "A category with that name already exists."})
+                return
+            self._send(HTTPStatus.OK, {"id": category_id, "name": name})
+            return
         match = re.fullmatch(r"/api/expenses/(\d+)", path)
         if not match:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -691,11 +784,11 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, OverflowError):
             self._send(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid date and amount."})
             return
-        category = str(body.get("category", "")).strip()[:60]
-        if not category:
-            self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a category."})
-            return
         with db() as conn:
+            category = _resolve_category(conn, session["user_id"], body.get("category"))
+            if category is None:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a predefined category or create a custom category first."})
+                return
             result = conn.execute("UPDATE expenses SET amount_cents=?,category=?,spent_on=?,payment_method=?,description=? WHERE id=? AND user_id=? AND deleted_at IS NULL", (amount, category, spent_on, str(body.get("paymentMethod", "")).strip()[:40], str(body.get("description", "")).strip()[:240], int(match.group(1)), session["user_id"]))
         if result.rowcount == 0:
             self._send(HTTPStatus.NOT_FOUND, {"error": "Expense not found."})

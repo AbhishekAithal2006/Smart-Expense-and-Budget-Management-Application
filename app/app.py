@@ -597,6 +597,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 with db() as conn:
+                    duplicates = conn.execute(
+                        "SELECT name FROM user_categories WHERE user_id=?",
+                        (session["user_id"],),
+                    ).fetchall()
+                    if any(row["name"].casefold() == name.casefold() for row in duplicates):
+                        self._send(HTTPStatus.CONFLICT, {"error": "A category with that name already exists."})
+                        return
                     cursor = conn.execute(
                         "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)",
                         (session["user_id"], name, datetime.now(timezone.utc).isoformat()),
@@ -758,6 +765,13 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(HTTPStatus.NOT_FOUND, {"error": "Custom category not found."})
                         return
                     previous_name = existing["name"]
+                    duplicates = conn.execute(
+                        "SELECT id,name FROM user_categories WHERE user_id=? AND id<>?",
+                        (session["user_id"], category_id),
+                    ).fetchall()
+                    if any(row["name"].casefold() == name.casefold() for row in duplicates):
+                        self._send(HTTPStatus.CONFLICT, {"error": "A category with that name already exists."})
+                        return
                     conn.execute(
                         "UPDATE user_categories SET name=? WHERE id=? AND user_id=?",
                         (name, category_id, session["user_id"]),

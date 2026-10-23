@@ -13,6 +13,7 @@ import ssl
 import sqlite3
 import sys
 import time
+from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import date, datetime, timezone
 from http import HTTPStatus
@@ -48,13 +49,26 @@ PREDEFINED_CATEGORIES = ("Food", "Travel", "Shopping", "Medical", "Entertainment
 CATEGORY_NAME_RE = re.compile(r"^[\w][\w &'()+,.-]{0,39}$", re.UNICODE)
 
 
-def db() -> sqlite3.Connection:
+
+@contextmanager
+def db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
+
+
 
 
 def _valid_email(value: str) -> bool:

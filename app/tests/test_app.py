@@ -1,12 +1,16 @@
 import http.cookiejar
 import json
-import tempfile
+import os
+import secrets
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+import psycopg
+from psycopg.conninfo import make_conninfo
+from psycopg import sql
 
 import app
 
@@ -14,8 +18,17 @@ import app
 class AppFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory()
-        app.DB_PATH = Path(cls.temp.name) / "tracker.sqlite3"
+        cls.test_database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
+        if not cls.test_database_url:
+            raise RuntimeError("Set TEST_DATABASE_URL to a dedicated PostgreSQL test database.")
+        cls.schema = f"app_test_{secrets.token_hex(6)}"
+        cls.original_database_url = app.DATABASE_URL
+        with psycopg.connect(cls.test_database_url) as connection:
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(cls.schema)))
+        app.DATABASE_URL = make_conninfo(
+            cls.test_database_url,
+            options=f"-c search_path={cls.schema}",
+        )
         app.initialize()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -27,7 +40,9 @@ class AppFlowTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
-        cls.temp.cleanup()
+        with psycopg.connect(cls.test_database_url) as connection:
+            connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
+        app.DATABASE_URL = cls.original_database_url
 
     def setUp(self):
         with app.db() as conn:
@@ -61,6 +76,11 @@ class AppFlowTests(unittest.TestCase):
         status, body = self.request("/api/register", "POST", {"fullName": "Test User", "email": email, "password": "correct-horse-123"}, csrf=False)
         self.assertEqual(status, 200, body)
         self.csrf = body["csrfToken"]
+
+    def assert_integrity_error(self, statement, params):
+        with self.assertRaises(psycopg.IntegrityError):
+            with app.db() as conn:
+                conn.execute(statement, params)
 
     def test_cross_user_expense_access_is_denied(self):
         self.register()
@@ -145,138 +165,101 @@ class AppFlowTests(unittest.TestCase):
         self.register()
         with app.db() as conn:
             user = conn.execute("SELECT id FROM users WHERE email=?", ("owner@example.com",)).fetchone()
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"], 0, "Food", app.date.today().isoformat(), "now"),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"] + 9999, 100, "Food", app.date.today().isoformat(), "now"),
-                )
             conn.execute(
                 "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)",
                 (user["id"], "Groceries", "now"),
             )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)",
-                    (user["id"], "groceries", "now"),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)",
-                    ("Duplicate", "OWNER@example.com", b"hash", "now"),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)",
-                    ("orphan-token", user["id"] + 9999, "csrf", 9999999999),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"], 100, None, app.date.today().isoformat(), "now"),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"] + 9999, "new@example.com", "token", 9999999999, 1),
-                )
+            user_id = user["id"]
+
+        cases = (
+            ("INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id, 0, "Food", app.date.today().isoformat(), "now")),
+            ("INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id + 9999, 100, "Food", app.date.today().isoformat(), "now")),
+            ("INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (user_id, "groceries", "now")),
+            ("INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)", ("Duplicate", "OWNER@example.com", b"hash", "now")),
+            ("INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("orphan-token", user_id + 9999, "csrf", 9999999999)),
+            ("INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id, 100, None, app.date.today().isoformat(), "now")),
+            ("INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id + 9999, "new@example.com", "token", 9999999999, 1)),
+        )
+        for statement, params in cases:
+            with self.subTest(statement=statement, params=params):
+                self.assert_integrity_error(statement, params)
 
     def test_database_not_null_constraints_reject_null_values(self):
         self.register()
         with app.db() as conn:
             user = conn.execute("SELECT id FROM users WHERE email=?", ("owner@example.com",)).fetchone()
-            cases = (
-                ("users.full_name", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", (None, "null-name@example.com", "", "INR", "", b"hash", "now")),
-                ("users.email", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null email", None, "", "INR", "", b"hash", "now")),
-                ("users.mobile", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null mobile", "null-mobile@example.com", None, "INR", "", b"hash", "now")),
-                ("users.currency_code", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null currency", "null-currency@example.com", "", None, "", b"hash", "now")),
-                ("users.avatar_url", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null avatar", "null-avatar@example.com", "", "INR", None, b"hash", "now")),
-                ("users.password_hash", "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)", ("Null hash", "null-hash@example.com", None, "now")),
-                ("users.created_at", "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)", ("Null created", "null-created@example.com", b"hash", None)),
-                ("sessions.user_id", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-user", None, "csrf", 9999999999)),
-                ("sessions.csrf_token", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-csrf", user["id"], None, 9999999999)),
-                ("sessions.expires_at", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-expiry", user["id"], "csrf", None)),
-                ("expenses.user_id", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (None, 100, "Food", app.date.today().isoformat(), "now")),
-                ("expenses.amount_cents", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user["id"], None, "Food", app.date.today().isoformat(), "now")),
-                ("expenses.spent_on", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user["id"], 100, "Food", None, "now")),
-                ("expenses.payment_method", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,payment_method,created_at) VALUES(?,?,?,?,?,?)", (user["id"], 100, "Food", app.date.today().isoformat(), None, "now")),
-                ("expenses.description", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,description,created_at) VALUES(?,?,?,?,?,?)", (user["id"], 100, "Food", app.date.today().isoformat(), None, "now")),
-                ("expenses.created_at", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user["id"], 100, "Food", app.date.today().isoformat(), None)),
-                ("user_categories.user_id", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (None, "Null owner", "now")),
-                ("user_categories.name", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (user["id"], None, "now")),
-                ("user_categories.created_at", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (user["id"], "Null created", None)),
-                ("login_attempts.failures", "INSERT INTO login_attempts(email,failures,blocked_until) VALUES(?,?,?)", ("null-failures@example.com", None, 0)),
-                ("login_attempts.blocked_until", "INSERT INTO login_attempts(email,failures,blocked_until) VALUES(?,?,?)", ("null-block@example.com", 0, None)),
-                ("email_change_requests.new_email", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user["id"], None, "null-email-token", 9999999999, 1)),
-                ("email_change_requests.token_hash", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user["id"], "new@example.com", None, 9999999999, 1)),
-                ("email_change_requests.expires_at", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user["id"], "new@example.com", "null-expiry-token", None, 1)),
-                ("email_change_requests.created_at", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user["id"], "new@example.com", "null-created-token", 9999999999, None)),
-            )
-            for column, sql, params in cases:
-                with self.subTest(column=column):
-                    with self.assertRaises(app.sqlite3.IntegrityError):
-                        conn.execute(sql, params)
+            user_id = user["id"]
+        cases = (
+            ("users.full_name", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", (None, "null-name@example.com", "", "INR", "", b"hash", "now")),
+            ("users.email", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null email", None, "", "INR", "", b"hash", "now")),
+            ("users.mobile", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null mobile", "null-mobile@example.com", None, "INR", "", b"hash", "now")),
+            ("users.currency_code", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null currency", "null-currency@example.com", "", None, "", b"hash", "now")),
+            ("users.avatar_url", "INSERT INTO users(full_name,email,mobile,currency_code,avatar_url,password_hash,created_at) VALUES(?,?,?,?,?,?,?)", ("Null avatar", "null-avatar@example.com", "", "INR", None, b"hash", "now")),
+            ("users.password_hash", "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)", ("Null hash", "null-hash@example.com", None, "now")),
+            ("users.created_at", "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)", ("Null created", "null-created@example.com", b"hash", None)),
+            ("sessions.user_id", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-user", None, "csrf", 9999999999)),
+            ("sessions.csrf_token", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-csrf", user_id, None, 9999999999)),
+            ("sessions.expires_at", "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", ("null-session-expiry", user_id, "csrf", None)),
+            ("expenses.user_id", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (None, 100, "Food", app.date.today().isoformat(), "now")),
+            ("expenses.amount_cents", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id, None, "Food", app.date.today().isoformat(), "now")),
+            ("expenses.spent_on", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id, 100, "Food", None, "now")),
+            ("expenses.payment_method", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,payment_method,created_at) VALUES(?,?,?,?,?,?)", (user_id, 100, "Food", app.date.today().isoformat(), None, "now")),
+            ("expenses.description", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,description,created_at) VALUES(?,?,?,?,?,?)", (user_id, 100, "Food", app.date.today().isoformat(), None, "now")),
+            ("expenses.created_at", "INSERT INTO expenses(user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?)", (user_id, 100, "Food", app.date.today().isoformat(), None)),
+            ("user_categories.user_id", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (None, "Null owner", "now")),
+            ("user_categories.name", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (user_id, None, "now")),
+            ("user_categories.created_at", "INSERT INTO user_categories(user_id,name,created_at) VALUES(?,?,?)", (user_id, "Null created", None)),
+            ("login_attempts.failures", "INSERT INTO login_attempts(email,failures,blocked_until) VALUES(?,?,?)", ("null-failures@example.com", None, 0)),
+            ("login_attempts.blocked_until", "INSERT INTO login_attempts(email,failures,blocked_until) VALUES(?,?,?)", ("null-block@example.com", 0, None)),
+            ("email_change_requests.new_email", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id, None, "null-email-token", 9999999999, 1)),
+            ("email_change_requests.token_hash", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id, "new@example.com", None, 9999999999, 1)),
+            ("email_change_requests.expires_at", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id, "new@example.com", "null-expiry-token", None, 1)),
+            ("email_change_requests.created_at", "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id, "new@example.com", "null-created-token", 9999999999, None)),
+        )
+        for column, statement, params in cases:
+            with self.subTest(column=column):
+                self.assert_integrity_error(statement, params)
 
     def test_database_primary_keys_and_email_change_token_are_unique(self):
         self.register()
         with app.db() as conn:
             user = conn.execute("SELECT id FROM users WHERE email=?", ("owner@example.com",)).fetchone()
             session = conn.execute("SELECT token_hash,csrf_token,expires_at FROM sessions WHERE user_id=?", (user["id"],)).fetchone()
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO users(id,full_name,email,password_hash,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"], "Duplicate id", "other-id@example.com", b"hash", "now"),
-                )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)",
-                    (session["token_hash"], user["id"], "another-csrf", session["expires_at"]),
-                )
             conn.execute(
                 "INSERT INTO expenses(id,user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?,?)",
                 (7001, user["id"], 100, "Food", app.date.today().isoformat(), "now"),
             )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO expenses(id,user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?,?)",
-                    (7001, user["id"], 200, "Food", app.date.today().isoformat(), "now"),
-                )
             conn.execute(
                 "INSERT INTO user_categories(id,user_id,name,created_at) VALUES(?,?,?,?)",
                 (7002, user["id"], "Unique category", "now"),
             )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO user_categories(id,user_id,name,created_at) VALUES(?,?,?,?)",
-                    (7002, user["id"], "Different category", "now"),
-                )
             conn.execute("INSERT INTO login_attempts(email) VALUES(?)", ("attempt@example.com",))
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute("INSERT INTO login_attempts(email) VALUES(?)", ("ATTEMPT@example.com",))
-
             conn.execute(
                 "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
                 (user["id"], "first-new@example.com", "shared-token-hash", 9999999999, 1),
             )
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
-                    (user["id"], "second-new@example.com", "different-token-hash", 9999999999, 2),
-                )
             cursor = conn.execute(
-                "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)",
+                "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?) RETURNING id",
                 ("Second user", "second@example.com", b"hash", "now"),
             )
-            second_user_id = cursor.lastrowid
-            with self.assertRaises(app.sqlite3.IntegrityError):
-                conn.execute(
-                    "INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)",
-                    (second_user_id, "second-new@example.com", "shared-token-hash", 9999999999, 2),
-                )
+            second_user_id = cursor.fetchone()["id"]
+            user_id = user["id"]
+            token_hash = session["token_hash"]
+            csrf_token = session["csrf_token"]
+            expires_at = session["expires_at"]
+
+        cases = (
+            ("INSERT INTO users(id,full_name,email,password_hash,created_at) VALUES(?,?,?,?,?)", (user_id, "Duplicate id", "other-id@example.com", b"hash", "now")),
+            ("INSERT INTO sessions(token_hash,user_id,csrf_token,expires_at) VALUES(?,?,?,?)", (token_hash, user_id, "another-csrf", expires_at)),
+            ("INSERT INTO expenses(id,user_id,amount_cents,category,spent_on,created_at) VALUES(?,?,?,?,?,?)", (7001, user_id, 200, "Food", app.date.today().isoformat(), "now")),
+            ("INSERT INTO user_categories(id,user_id,name,created_at) VALUES(?,?,?,?)", (7002, user_id, "Different category", "now")),
+            ("INSERT INTO login_attempts(email) VALUES(?)", ("ATTEMPT@example.com",)),
+            ("INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (user_id, "second-new@example.com", "different-token-hash", 9999999999, 2)),
+            ("INSERT INTO email_change_requests(user_id,new_email,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)", (second_user_id, "second-new@example.com", "shared-token-hash", 9999999999, 2)),
+        )
+        for statement, params in cases:
+            with self.subTest(statement=statement, params=params):
+                self.assert_integrity_error(statement, params)
 
     def test_sql_injection_inputs_are_treated_as_data(self):
         self.register()

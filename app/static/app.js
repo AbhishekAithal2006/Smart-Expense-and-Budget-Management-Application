@@ -1,6 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null };
-const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format((cents || 0) / 100);
+const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null, currencyCode: 'INR' };
+const currencySymbols = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
+const normalizeCurrencyCode = (value) => Object.hasOwn(currencySymbols, value) ? value : 'INR';
+const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: normalizeCurrencyCode(state.currencyCode), maximumFractionDigits: 2 }).format((cents || 0) / 100);
 const localDate = (date = new Date()) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const monthNow = () => localDate().slice(0, 7);
 
@@ -78,11 +80,71 @@ function showPage(page) {
 
 async function refresh() {
   try {
-    await Promise.all([loadSummary(), loadExpenses(), loadProfile()]);
+    await loadProfile();
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
   }
+}
+
+async function loadCategories() {
+  const data = await api('/api/categories');
+  const expenseSelect = $('#expense-category');
+  const filterSelect = $('#category-filter');
+  const selectedExpense = expenseSelect.value;
+  const selectedFilter = filterSelect.value;
+  expenseSelect.replaceChildren(new Option('Choose category', ''));
+  filterSelect.replaceChildren(new Option('All categories', ''));
+  for (const category of [...data.predefined, ...data.custom.map((item) => item.name)]) {
+    expenseSelect.add(new Option(category, category));
+    filterSelect.add(new Option(category, category));
+  }
+  if ([...expenseSelect.options].some((option) => option.value === selectedExpense)) expenseSelect.value = selectedExpense;
+  if ([...filterSelect.options].some((option) => option.value === selectedFilter)) filterSelect.value = selectedFilter;
+
+  const list = $('#custom-category-list');
+  list.replaceChildren();
+  for (const category of data.custom) {
+    const item = element('li', 'category-item');
+    item.append(element('span', 'category-item-name', category.name));
+    const edit = element('button', 'row-action', 'Edit');
+    edit.type = 'button';
+    edit.setAttribute('aria-label', `Rename ${category.name} category`);
+    edit.addEventListener('click', () => startCategoryEdit(item, category));
+    item.append(edit);
+    list.append(item);
+  }
+}
+
+function startCategoryEdit(item, category) {
+  item.replaceChildren();
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.maxLength = 40;
+  input.value = category.name;
+  input.setAttribute('aria-label', `New name for ${category.name}`);
+  const save = element('button', 'row-action', 'Save');
+  save.type = 'button';
+  const cancel = element('button', 'row-action', 'Cancel');
+  cancel.type = 'button';
+  save.addEventListener('click', async () => {
+    $('#category-feedback').textContent = '';
+    try {
+      await api(`/api/categories/${category.id}`, { method: 'PATCH', body: JSON.stringify({ name: input.value }) });
+      $('#category-feedback').className = 'form-success';
+      $('#category-feedback').textContent = 'Category updated. Matching expenses were updated too.';
+      await loadCategories();
+      await loadExpenses();
+    } catch (error) {
+      $('#category-feedback').className = 'form-error';
+      $('#category-feedback').textContent = error.message;
+    }
+  });
+  cancel.addEventListener('click', () => loadCategories().catch((error) => toast(error.message)));
+  item.append(input, save, cancel);
+  input.focus();
+  input.select();
 }
 
 async function loadSummary() {
@@ -96,7 +158,14 @@ async function loadProfile() {
   const profile = await api('/api/profile');
   $('#profile-name').value = profile.fullName;
   $('#profile-email').value = profile.email;
+  $('#profile-email-pending').classList.toggle('hidden', !profile.pendingEmail);
+  $('#profile-email-pending').textContent = profile.pendingEmail
+    ? `Email change waiting for verification. Check ${profile.pendingEmail}; your current email stays active until you verify it.`
+    : '';
   $('#profile-mobile').value = profile.mobile;
+  state.currencyCode = normalizeCurrencyCode(profile.currencyCode);
+  $('#profile-currency').value = state.currencyCode;
+  $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
   $('#profile-name-summary').textContent = profile.fullName || '—';
   $('#user-email').textContent = profile.email;
   $('#profile-display-name').textContent = profile.fullName || 'Your account';
@@ -106,6 +175,7 @@ async function loadProfile() {
   $('#profile-sign-in-method').textContent = loginMethod;
   const createdAt = profile.createdAt ? new Date(profile.createdAt) : null;
   $('#profile-created-at').textContent = !createdAt || Number.isNaN(createdAt.getTime()) ? '—' : createdAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+  $('#password-section').classList.toggle('hidden', profile.loginMethod === 'Google');
   setProfileAvatar(profile.avatarUrl, profile.fullName);
 }
 
@@ -142,6 +212,10 @@ function categorySymbol(category) {
 
 function addActionCell(row, expense) {
   const cell = element('td');
+  if (expense.deleted_at) {
+    cell.append(element('span', 'deleted-expense-badge', 'Deleted'));
+    return row.append(cell);
+  }
   const actions = element('div', 'row-actions');
   const edit = element('button', 'row-action', 'Edit');
   edit.type = 'button';
@@ -172,6 +246,12 @@ async function loadExpenses() {
     const text = document.createElement('span');
     text.append(document.createTextNode(expense.category));
     if (expense.description) text.append(element('span', 'expense-description', expense.description));
+    if (expense.deleted_at) {
+      const deletedAt = new Date(expense.deleted_at);
+      const deletedLabel = Number.isNaN(deletedAt.getTime()) ? 'Deleted' : `Deleted on ${deletedAt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+      text.append(element('span', 'expense-deleted-note', deletedLabel));
+      row.classList.add('expense-deleted-row');
+    }
     expenseName.append(text);
     detail.append(expenseName);
     const dateCell = element('td', '', new Date(`${expense.spent_on}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }));
@@ -247,6 +327,23 @@ $('#expense-form').addEventListener('submit', async (event) => {
   } catch (error) { $('#expense-error').textContent = error.message; }
 });
 
+$('#category-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = $('#category-name');
+  const feedback = $('#category-feedback');
+  feedback.textContent = '';
+  try {
+    await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: input.value }) });
+    input.value = '';
+    feedback.className = 'form-success';
+    feedback.textContent = 'Category added. It is now available when recording expenses.';
+    await loadCategories();
+  } catch (error) {
+    feedback.className = 'form-error';
+    feedback.textContent = error.message;
+  }
+});
+
 $('#profile-button').addEventListener('click', async () => {
   const nextPage = state.page === 'profile' ? 'home' : 'profile';
   showPage(nextPage);
@@ -259,15 +356,73 @@ $('#profile-button').addEventListener('click', async () => {
 $('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   $('#profile-error').textContent = '';
+  $('#profile-success').textContent = '';
   const data = Object.fromEntries(new FormData(event.currentTarget));
+  const email = data.email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    $('#profile-error').textContent = 'Enter a valid email address.';
+    $('#profile-email').focus();
+    return;
+  }
+  const mobile = data.mobile.trim();
+  const mobileDigits = mobile.replace(/\D/g, '').length;
+  if (mobile && (!/^\+?[0-9][0-9 ()-]{5,28}$/.test(mobile) || mobileDigits < 10 || mobileDigits > 15)) {
+    $('#profile-error').textContent = 'Enter a valid mobile number with 10–15 digits, or leave it empty.';
+    $('#profile-mobile').focus();
+    return;
+  }
   try {
     const profile = await api('/api/profile', { method: 'PATCH', body: JSON.stringify(data) });
+    state.currencyCode = normalizeCurrencyCode(profile.currencyCode || data.currencyCode);
+    $('#profile-currency').value = state.currencyCode;
+    $('#amount-currency-symbol').textContent = currencySymbols[state.currencyCode];
     $('#user-email').textContent = profile.email;
+    $('#profile-email').value = profile.email;
     $('#profile-name-summary').textContent = profile.fullName;
     $('#profile-display-name').textContent = profile.fullName;
     $('#profile-display-email').textContent = profile.email;
-    toast('Profile updated.');
+    $('#profile-email-pending').classList.toggle('hidden', !profile.emailVerificationPending);
+    $('#profile-email-pending').textContent = profile.emailVerificationPending
+      ? `Verification link sent to ${profile.pendingEmail}. Your current email remains active until you verify it.`
+      : '';
+    $('#profile-success').textContent = profile.emailVerificationPending
+      ? 'Profile details saved. Verify the new address to finish changing your email.'
+      : 'Profile saved successfully.';
+    toast(profile.emailVerificationPending ? 'Check your new email to verify the change.' : 'Profile updated.');
+    await Promise.all([loadSummary(), loadExpenses()]);
   } catch (error) { $('#profile-error').textContent = error.message; }
+});
+
+['#profile-name', '#profile-email', '#profile-mobile', '#profile-currency'].forEach((selector) => {
+  const field = $(selector);
+  const clearProfileFeedback = () => {
+    $('#profile-error').textContent = '';
+    $('#profile-success').textContent = '';
+  };
+  field.addEventListener('input', clearProfileFeedback);
+  field.addEventListener('change', clearProfileFeedback);
+});
+
+$('#profile-currency').addEventListener('change', (event) => {
+  $('#amount-currency-symbol').textContent = currencySymbols[event.currentTarget.value] || currencySymbols.INR;
+});
+
+$('#password-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorNode = $('#password-error');
+  errorNode.textContent = '';
+  const data = Object.fromEntries(new FormData(form));
+  if (data.newPassword !== data.confirmPassword) {
+    errorNode.textContent = 'The new passwords do not match.';
+    $('#confirm-password').focus();
+    return;
+  }
+  try {
+    await api('/api/password', { method: 'POST', body: JSON.stringify(data) });
+    form.reset();
+    toast('Password updated. Other signed-in sessions were logged out.');
+  } catch (error) { errorNode.textContent = error.message; }
 });
 
 $('#filter-form').addEventListener('submit', async (event) => { event.preventDefault(); try { await loadExpenses(); } catch (error) { toast(error.message); } });
@@ -296,12 +451,28 @@ const googleErrors = {
   google_failed: 'Google sign-in failed. Please try again.'
 };
 const googleError = new URLSearchParams(window.location.search).get('auth_error');
+const pageParams = new URLSearchParams(window.location.search);
+const emailVerified = pageParams.get('email_verified') === '1';
+const emailError = pageParams.get('email_error');
 if (googleError) {
   $('#auth-error').textContent = googleErrors[googleError] || googleErrors.google_failed;
-  window.history.replaceState(null, '', '/');
 }
+const emailErrors = {
+  invalid: 'This verification link is invalid or has already been used.',
+  expired: 'This verification link has expired. Request another email change from your profile.',
+  already_used: 'That email address is already connected to another account.'
+};
+if (googleError || emailVerified || emailError) window.history.replaceState(null, '', '/');
 
 api('/api/me').then((session) => {
   state.csrf = session.csrfToken || '';
   if (session.authenticated) showApp(session.email);
+  if (emailVerified) {
+    if (session.authenticated) toast('Your email address has been verified.');
+    else $('#auth-error').textContent = 'Your email address is verified. Sign in with the new address.';
+  } else if (emailError) {
+    const message = emailErrors[emailError] || emailErrors.invalid;
+    if (session.authenticated) toast(message);
+    else $('#auth-error').textContent = message;
+  }
 }).catch(() => {});

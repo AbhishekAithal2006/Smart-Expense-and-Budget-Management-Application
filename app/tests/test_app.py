@@ -1,12 +1,16 @@
 import http.cookiejar
 import json
-import tempfile
+import os
+import secrets
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+import psycopg
+from psycopg.conninfo import make_conninfo
+from psycopg import sql
 
 import app
 
@@ -14,8 +18,17 @@ import app
 class AppFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory()
-        app.DB_PATH = Path(cls.temp.name) / "tracker.sqlite3"
+        cls.test_database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
+        if not cls.test_database_url:
+            raise RuntimeError("Set TEST_DATABASE_URL to a dedicated PostgreSQL test database.")
+        cls.schema = f"app_test_{secrets.token_hex(6)}"
+        cls.original_database_url = app.DATABASE_URL
+        with psycopg.connect(cls.test_database_url) as connection:
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(cls.schema)))
+        app.DATABASE_URL = make_conninfo(
+            cls.test_database_url,
+            options=f"-c search_path={cls.schema}",
+        )
         app.initialize()
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -27,7 +40,9 @@ class AppFlowTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         cls.thread.join(timeout=2)
-        cls.temp.cleanup()
+        with psycopg.connect(cls.test_database_url) as connection:
+            connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(cls.schema)))
+        app.DATABASE_URL = cls.original_database_url
 
     def setUp(self):
         with app.db() as conn:
@@ -87,7 +102,11 @@ class AppFlowTests(unittest.TestCase):
         self.assertEqual(status, 200)
         status, history = self.request("/api/expenses")
         self.assertEqual(status, 200)
-        self.assertEqual(history["expenses"], [])
+        self.assertEqual(len(history["expenses"]), 1)
+        self.assertIsNotNone(history["expenses"][0]["deleted_at"])
+        status, summary = self.request("/api/summary")
+        self.assertEqual(status, 200)
+        self.assertEqual(summary["expenseCount"], 0)
 
         self.request("/api/logout", "POST")
         self.csrf = ""

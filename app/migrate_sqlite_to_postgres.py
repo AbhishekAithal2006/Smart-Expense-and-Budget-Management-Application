@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import psycopg
+from psycopg import sql
 
 import app
 
@@ -18,6 +19,9 @@ USER_COLUMNS = (
 )
 EXPENSE_COLUMNS = (
     "amount_cents", "category", "spent_on", "payment_method", "description", "deleted_at", "created_at",
+)
+APP_TABLES = (
+    "users", "sessions", "expenses", "user_categories", "login_attempts", "email_change_requests",
 )
 
 
@@ -34,12 +38,38 @@ def _source_rows(source: sqlite3.Connection, table: str, columns: tuple[str, ...
     return source.execute(f"SELECT id,{','.join(selected)} FROM {table}").fetchall()
 
 
+def _require_empty_target() -> None:
+    with psycopg.connect(app.DATABASE_URL, connect_timeout=10) as target:
+        existing_tables = {
+            row[0]
+            for row in target.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'"
+            )
+        }
+        populated = []
+        for table in APP_TABLES:
+            if table not in existing_tables:
+                continue
+            has_rows = target.execute(
+                sql.SQL("SELECT EXISTS (SELECT 1 FROM {} LIMIT 1)").format(sql.Identifier(table))
+            ).fetchone()[0]
+            if has_rows:
+                populated.append(table)
+    if populated:
+        raise RuntimeError(
+            "PostgreSQL target already contains app data "
+            f"({', '.join(populated)}); migrate into an empty target database."
+        )
+
+
 def migrate(source_path: Path) -> dict[str, int]:
     if not app.DATABASE_URL:
         raise RuntimeError("Set DATABASE_URL to the target PostgreSQL database first.")
     if not source_path.is_file():
         raise FileNotFoundError(f"SQLite source database not found: {source_path}")
 
+    _require_empty_target()
     app.initialize()
     source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
     source.row_factory = sqlite3.Row
@@ -110,19 +140,6 @@ def migrate(source_path: Path) -> dict[str, int]:
                 category = old_expense["category"]
                 spent_on = old_expense["spent_on"]
                 amount = old_expense["amount_cents"]
-                description = old_expense["description"] if "description" in old_expense.keys() else ""
-                duplicate = target.execute(
-                    "SELECT 1 FROM expenses WHERE user_id=? AND amount_cents=? AND category=? AND spent_on=? "
-                    "AND payment_method=? AND description=? AND deleted_at IS NOT DISTINCT FROM ? LIMIT 1",
-                    (
-                        user_id, amount, category, spent_on,
-                        old_expense["payment_method"] if "payment_method" in old_expense.keys() else "",
-                        description,
-                        old_expense["deleted_at"] if "deleted_at" in old_expense.keys() else None,
-                    ),
-                ).fetchone()
-                if duplicate:
-                    continue
                 columns = [column for column in EXPENSE_COLUMNS if column in old_expense.keys()]
                 values = [old_expense[column] for column in columns]
                 columns.insert(0, "user_id")

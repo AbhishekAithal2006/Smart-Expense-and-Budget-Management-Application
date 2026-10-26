@@ -12,6 +12,22 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgresql://expense_app:expense_test_password@localhost:5432/smart_expense_test
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: smart_expense_test
+          POSTGRES_USER: expense_app
+          POSTGRES_PASSWORD: expense_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U expense_app -d smart_expense_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out source
         uses: actions/checkout@v4

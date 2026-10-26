@@ -172,6 +172,7 @@ def initialize() -> None:
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE expenses ADD COLUMN IF NOT EXISTS deleted_at TEXT",
             "CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower ON users (LOWER(email))",
+            "CREATE UNIQUE INDEX IF NOT EXISTS login_attempts_email_lower ON login_attempts (LOWER(email))",
             "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL",
             "CREATE UNIQUE INDEX IF NOT EXISTS user_categories_name_lower ON user_categories(user_id, LOWER(name))",
             "CREATE INDEX IF NOT EXISTS expenses_user_date ON expenses(user_id, spent_on DESC)",

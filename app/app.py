@@ -861,7 +861,8 @@ def backup(destination: str) -> None:
     connection_values = conninfo_to_dict(DATABASE_URL)
     for option in ("host", "port", "dbname", "user", "password", "sslmode", "sslcert", "sslkey", "sslrootcert", "options"):
         if option in connection_values:
-            pg_environment[f"PG{option.upper()}"] = connection_values[option]
+            environment_name = "PGDATABASE" if option == "dbname" else f"PG{option.upper()}"
+            pg_environment[environment_name] = connection_values[option]
     subprocess.run(["pg_dump", "--format=custom", "--file", str(target)], check=True, env=pg_environment)
     print(f"Backup written to {target}")
 

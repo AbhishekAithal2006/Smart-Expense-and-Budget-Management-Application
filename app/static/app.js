@@ -132,14 +132,10 @@ function startCategoryEdit(item, category) {
     $('#category-feedback').textContent = '';
     try {
       await api(`/api/categories/${category.id}`, { method: 'PATCH', body: JSON.stringify({ name: input.value }) });
-      $('#category-feedback').className = 'form-success';
       $('#category-feedback').textContent = 'Category updated. Matching expenses were updated too.';
       await loadCategories();
       await loadExpenses();
-    } catch (error) {
-      $('#category-feedback').className = 'form-error';
-      $('#category-feedback').textContent = error.message;
-    }
+    } catch (error) { $('#category-feedback').textContent = error.message; }
   });
   cancel.addEventListener('click', () => loadCategories().catch((error) => toast(error.message)));
   item.append(input, save, cancel);
@@ -335,13 +331,9 @@ $('#category-form').addEventListener('submit', async (event) => {
   try {
     await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: input.value }) });
     input.value = '';
-    feedback.className = 'form-success';
     feedback.textContent = 'Category added. It is now available when recording expenses.';
     await loadCategories();
-  } catch (error) {
-    feedback.className = 'form-error';
-    feedback.textContent = error.message;
-  }
+  } catch (error) { feedback.textContent = error.message; }
 });
 
 $('#profile-button').addEventListener('click', async () => {

@@ -259,7 +259,19 @@ async function loadExpenses() {
   }
   const count = result.expenses.length;
   $('#expense-count').textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
-  $('#empty-state').classList.toggle('hidden', count > 0);
+
+  const emptyState = $('#empty-state');
+  const hasFilters = params.toString().length > 0;
+
+  emptyState.querySelector('h3').textContent = hasFilters
+    ? 'No matching expenses found'
+    : 'No expenses here yet';
+
+  emptyState.querySelector('p').textContent = hasFilters
+    ? 'Try changing your search or filters.'
+    : 'Add your first expense above. Your history will build from there.';
+
+  emptyState.classList.toggle('hidden', count > 0);
   $('.table-wrap').classList.toggle('hidden', count === 0);
 }
 

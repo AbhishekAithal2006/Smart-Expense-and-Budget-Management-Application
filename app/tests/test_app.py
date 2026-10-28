@@ -6,7 +6,8 @@ import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPCookieProcessor, Request, build_opener
+from unittest.mock import patch
 
 import psycopg
 from psycopg.conninfo import make_conninfo
@@ -49,6 +50,7 @@ class AppFlowTests(unittest.TestCase):
             conn.execute("DELETE FROM sessions")
             conn.execute("DELETE FROM expenses")
             conn.execute("DELETE FROM login_attempts")
+            conn.execute("DELETE FROM system_activity")
             conn.execute("DELETE FROM users")
         self.cookies = http.cookiejar.CookieJar()
         self.client = build_opener(HTTPCookieProcessor(self.cookies))
@@ -74,6 +76,11 @@ class AppFlowTests(unittest.TestCase):
 
     def register(self, email="owner@example.com"):
         status, body = self.request("/api/register", "POST", {"fullName": "Test User", "email": email, "password": "correct-horse-123"}, csrf=False)
+        self.assertEqual(status, 200, body)
+        self.csrf = body["csrfToken"]
+
+    def login(self, email):
+        status, body = self.request("/api/login", "POST", {"email": email, "password": "correct-horse-123"}, csrf=False)
         self.assertEqual(status, 200, body)
         self.csrf = body["csrfToken"]
 
@@ -260,6 +267,221 @@ class AppFlowTests(unittest.TestCase):
         for statement, params in cases:
             with self.subTest(statement=statement, params=params):
                 self.assert_integrity_error(statement, params)
+
+    def test_admin_views_minimal_user_data_and_activity(self):
+        self.register("admin@example.com")
+        with app.db() as conn:
+            admin_id = conn.execute("SELECT id FROM users WHERE email=?", ("admin@example.com",)).fetchone()["id"]
+        self.assertEqual(app.bootstrap_admin("admin@example.com"), admin_id)
+        with self.assertRaisesRegex(RuntimeError, "already provisioned"):
+            app.bootstrap_admin("admin@example.com")
+        status, me = self.request("/api/me")
+        self.assertEqual(status, 200)
+        self.assertTrue(me["isAdmin"])
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.register("member@example.com")
+        with app.db() as conn:
+            member_id = conn.execute("SELECT id FROM users WHERE email=?", ("member@example.com",)).fetchone()["id"]
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        status, _ = self.request("/api/login", "POST", {"email": "member@example.com", "password": "wrong-password"}, csrf=False, no_cookie=True)
+        self.assertEqual(status, 401)
+        self.login("admin@example.com")
+        status, _ = self.request("/api/password", "POST", {
+            "currentPassword": "correct-horse-123",
+            "newPassword": "new-correct-horse-123",
+            "confirmPassword": "new-correct-horse-123",
+        })
+        self.assertEqual(status, 200)
+        status, data = self.request("/api/admin/users")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(len(data["users"]), 2)
+        self.assertEqual(set(data["users"][0]), {"id", "full_name", "email", "created_at", "is_admin", "is_suspended"})
+        self.assertIn(member_id, [row["id"] for row in data["users"]])
+        today = app.date.today().isoformat()
+        status, _ = self.request("/api/expenses", "POST", {"amount": 9, "category": "Food", "date": today, "description": "private audit payload"})
+        self.assertEqual(status, 201)
+        with app.db() as conn:
+            expense_id = conn.execute("SELECT id FROM expenses WHERE user_id=?", (admin_id,)).fetchone()["id"]
+        status, _ = self.request(f"/api/expenses/{expense_id}", "PATCH", {"amount": 10, "category": "Food", "date": today, "description": "updated private audit payload"})
+        self.assertEqual(status, 200)
+        status, _ = self.request(f"/api/expenses/{expense_id}", "DELETE")
+        self.assertEqual(status, 200)
+        status, data = self.request("/api/admin/activity")
+        self.assertEqual(status, 200, data)
+        self.assertIn("account_registered", [event["event_type"] for event in data["events"]])
+        self.assertIn("admin_bootstrapped", [event["event_type"] for event in data["events"]])
+        self.assertIn("login_succeeded", [event["event_type"] for event in data["events"]])
+        self.assertIn("login_failed", [event["event_type"] for event in data["events"]])
+        self.assertIn("password_changed", [event["event_type"] for event in data["events"]])
+        self.assertIn("logout", [event["event_type"] for event in data["events"]])
+        for event_type in ("expense_created", "expense_updated", "expense_deleted"):
+            self.assertIn(event_type, [event["event_type"] for event in data["events"]])
+        self.assertTrue(all(set(event) == {"id", "actor_user_id", "target_user_id", "event_type", "created_at"} for event in data["events"]))
+        self.assertNotIn("private audit payload", json.dumps(data["events"]))
+
+    def test_admin_routes_require_authentication_and_admin_role(self):
+        paths = (("GET", "/api/admin/users", None), ("GET", "/api/admin/activity", None), ("PATCH", "/api/admin/users/1", {"suspended": True}))
+        for method, path, payload in paths:
+            with self.subTest(method=method, path=path):
+                status, _ = self.request(path, method, payload, csrf=False, no_cookie=True)
+                self.assertEqual(status, 401)
+
+        self.register("member@example.com")
+        with app.db() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE email=?", ("member@example.com",)).fetchone()["id"]
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.register("other@example.com")
+        with app.db() as conn:
+            other_user_id = conn.execute("SELECT id FROM users WHERE email=?", ("other@example.com",)).fetchone()["id"]
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.login("member@example.com")
+        for method, path, payload in (
+            ("GET", "/api/admin/users", None),
+            ("GET", "/api/admin/activity", None),
+            ("PATCH", f"/api/admin/users/{user_id}", {"suspended": True}),
+            ("PATCH", f"/api/admin/users/{other_user_id}", {"suspended": True}),
+            ("PATCH", f"/api/admin/users/{user_id}", {"is_admin": True, "suspended": False}),
+        ):
+            with self.subTest(method=method, path=path, payload=payload):
+                status, _ = self.request(path, method, payload)
+                self.assertEqual(status, 403)
+        with app.db() as conn:
+            self.assertFalse(conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()["is_admin"])
+            self.assertFalse(conn.execute("SELECT is_suspended FROM users WHERE id=?", (user_id,)).fetchone()["is_suspended"])
+            self.assertFalse(conn.execute("SELECT is_suspended FROM users WHERE id=?", (other_user_id,)).fetchone()["is_suspended"])
+
+    def test_admin_write_requires_csrf_and_rejects_privilege_changes(self):
+        self.register("admin@example.com")
+        with app.db() as conn:
+            admin_id = conn.execute("SELECT id FROM users WHERE email=?", ("admin@example.com",)).fetchone()["id"]
+        app.bootstrap_admin("admin@example.com")
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.register("member@example.com")
+        with app.db() as conn:
+            target_id = conn.execute("SELECT id FROM users WHERE email=?", ("member@example.com",)).fetchone()["id"]
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.login("admin@example.com")
+        for label, kwargs in (("missing", {"csrf": False}), ("invalid", {"csrf_token": "bad-token"})):
+            with self.subTest(token=label):
+                status, _ = self.request(f"/api/admin/users/{target_id}", "PATCH", {"suspended": True}, **kwargs)
+                self.assertEqual(status, 403)
+        status, _ = self.request(f"/api/admin/users/{target_id}", "PATCH", {"suspended": True, "is_admin": True})
+        self.assertEqual(status, 400)
+        status, _ = self.request(f"/api/admin/users/{admin_id}", "PATCH", {"suspended": True})
+        self.assertEqual(status, 409)
+        with app.db() as conn:
+            # Seed a second admin directly to exercise management of an existing
+            # admin account without adding any application role-promotion route.
+            conn.execute("UPDATE users SET is_admin=TRUE WHERE id=?", (target_id,))
+        status, result = self.request(f"/api/admin/users/{target_id}", "PATCH", {"suspended": True})
+        self.assertEqual(status, 200, result)
+        with app.db() as conn:
+            target = conn.execute("SELECT is_admin,is_suspended FROM users WHERE id=?", (target_id,)).fetchone()
+        self.assertTrue(target["is_admin"])
+        self.assertTrue(target["is_suspended"])
+        status, result = self.request(f"/api/admin/users/{target_id}", "PATCH", {"suspended": False})
+        self.assertEqual(status, 200, result)
+        with app.db() as conn:
+            target = conn.execute("SELECT is_admin,is_suspended FROM users WHERE id=?", (target_id,)).fetchone()
+        self.assertTrue(target["is_admin"])
+        self.assertFalse(target["is_suspended"])
+
+    def test_suspension_revokes_existing_sessions_and_blocks_login(self):
+        self.register("admin@example.com")
+        with app.db() as conn:
+            admin_id = conn.execute("SELECT id FROM users WHERE email=?", ("admin@example.com",)).fetchone()["id"]
+        app.bootstrap_admin("admin@example.com")
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        self.register("member@example.com")
+        member_cookie = next(cookie.value for cookie in self.cookies if cookie.name == "session")
+        with app.db() as conn:
+            member_id = conn.execute("SELECT id FROM users WHERE email=?", ("member@example.com",)).fetchone()["id"]
+        # Signing in as the administrator replaces the browser cookie but leaves
+        # the captured member session active until the admin suspends that account.
+        self.login("admin@example.com")
+        status, result = self.request(f"/api/admin/users/{member_id}", "PATCH", {"suspended": True})
+        self.assertEqual(status, 200, result)
+        self.assertTrue(result["isSuspended"])
+        with app.db() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) AS total FROM sessions WHERE user_id=?", (member_id,)).fetchone()["total"], 0)
+        status, _ = self.request("/api/profile", cookie=member_cookie, no_cookie=True)
+        self.assertEqual(status, 401)
+        status, _ = self.request("/api/expenses", cookie=member_cookie, no_cookie=True)
+        self.assertEqual(status, 401)
+
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        status, _ = self.request("/api/login", "POST", {"email": "member@example.com", "password": "correct-horse-123"}, csrf=False, no_cookie=True)
+        self.assertEqual(status, 403)
+        with app.db() as conn:
+            activity = {row["event_type"] for row in conn.execute("SELECT event_type FROM system_activity").fetchall()}
+        self.assertIn("account_suspended", activity)
+        self.assertIn("login_rejected_suspended", activity)
+        self.login("admin@example.com")
+        status, result = self.request(f"/api/admin/users/{member_id}", "PATCH", {"suspended": False})
+        self.assertEqual(status, 200, result)
+        self.request("/api/logout", "POST")
+        self.csrf = ""
+        status, result = self.request("/api/login", "POST", {"email": "member@example.com", "password": "correct-horse-123"}, csrf=False)
+        self.assertEqual(status, 200, result)
+        status, me = self.request("/api/me")
+        self.assertFalse(me["isAdmin"])
+
+    def test_suspended_google_account_cannot_start_a_session(self):
+        with app.db() as conn:
+            conn.execute(
+                "INSERT INTO users(full_name,email,google_sub,password_hash,created_at,is_suspended) VALUES(?,?,?,?,?,TRUE)",
+                ("Suspended Google", "google-suspended@example.com", "google-sub-123", app._password_hash("random-google-password"), "now"),
+            )
+
+        class StubResponse:
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return self.payload
+
+        class NoRedirectHandler(HTTPRedirectHandler):
+            def redirect_request(self, request, response, code, message, headers, new_url):
+                return None
+
+        original_values = (app.GOOGLE_CLIENT_ID, app.GOOGLE_CLIENT_SECRET)
+        app.GOOGLE_CLIENT_ID, app.GOOGLE_CLIENT_SECRET = "test-client", "test-secret"
+        try:
+            callback = Request(
+                self.base + "/auth/google/callback?state=state-value&code=auth-code",
+                headers={"Cookie": "google_oauth_state=state-value"},
+            )
+            client = build_opener(NoRedirectHandler())
+            with patch("app.urlopen", side_effect=[
+                StubResponse({"access_token": "test-access-token"}),
+                StubResponse({"email": "google-suspended@example.com", "email_verified": True, "sub": "google-sub-123"}),
+            ]):
+                try:
+                    client.open(callback, timeout=3)
+                    self.fail("Expected the suspended Google account callback to redirect.")
+                except HTTPError as response:
+                    self.assertEqual(response.code, 302)
+                    self.assertEqual(response.headers.get("Location"), "/?auth_error=account_suspended")
+        finally:
+            app.GOOGLE_CLIENT_ID, app.GOOGLE_CLIENT_SECRET = original_values
+        with app.db() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE email=?", ("google-suspended@example.com",)).fetchone()["id"]
+            self.assertEqual(conn.execute("SELECT COUNT(*) AS total FROM sessions WHERE user_id=?", (user_id,)).fetchone()["total"], 0)
+            self.assertIn("login_rejected_suspended", [row["event_type"] for row in conn.execute("SELECT event_type FROM system_activity WHERE target_user_id=?", (user_id,)).fetchall()])
 
     def test_sql_injection_inputs_are_treated_as_data(self):
         self.register()

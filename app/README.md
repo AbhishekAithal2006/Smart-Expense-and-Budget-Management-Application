@@ -31,10 +31,19 @@ Do not commit `.env` or put a production database password in source control. Fo
 - Add, edit, delete, search, and filter personal expenses.
 - View a monthly spending summary and transaction history.
 - Use a responsive interface with clear form validation and feedback.
+- Administrators can review a limited user account listing, suspend or reactivate accounts, and review recent system activity.
 
 ## Security and data handling
 
 Passwords are stored as salted scrypt hashes. Sessions use random opaque tokens stored as keyed hashes, HttpOnly/SameSite cookies, CSRF protection, and same-origin checks. Repeated failed logins are throttled. Database statements are parameterized, fields are validated, and all expense reads and changes are scoped to the signed-in owner. The interface avoids rendering user-entered strings as HTML.
+
+Administrator access is not granted during registration. After creating the intended account, an operator with access to the application host and database can provision the first administrator once from an interactive terminal:
+
+```sh
+python3 app.py bootstrap-admin admin@example.com
+```
+
+The command requires an explicit email-bound confirmation and refuses to run after an administrator already exists. Administrators can view user names, email addresses, registration dates, and account status; they cannot view password hashes or session credentials. An administrator can suspend or reactivate any other account, including another administrator, but cannot suspend their own account. Suspension immediately revokes the account's sessions and blocks login and protected requests until reactivated. The activity view records registration, successful and failed login attempts for known accounts, suspended-account login attempts, logout, password changes, administrator bootstrap, account suspension/reactivation, and expense creation, edits, and deletion. Events contain user IDs, event type, and timestamp only; password values, expense amounts, categories, descriptions, unknown login addresses, session tokens, and request contents are not recorded.
 
 The app stores its data in PostgreSQL. Create a custom-format backup with `pg_dump` installed and database credentials available through `DATABASE_URL`:
 

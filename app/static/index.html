@@ -12,7 +12,7 @@
   <main class="shell">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Ledgerly home"><span class="brand-mark">L</span><span>ledgerly<span class="brand-dot">.</span></span></a>
-      <div class="topbar-right"><span class="today" id="today-label"></span><button id="profile-button" class="button button-quiet hidden" type="button">Profile</button><span id="user-email" class="user-email hidden"></span><button id="logout-button" class="button button-quiet hidden" type="button">Log out</button></div>
+      <div class="topbar-right"><span class="today" id="today-label"></span><button id="profile-button" class="button button-quiet hidden" type="button">Profile</button><button id="admin-button" class="button button-quiet hidden" type="button">Admin</button><span id="user-email" class="user-email hidden"></span><button id="logout-button" class="button button-quiet hidden" type="button">Log out</button></div>
     </header>
 
     <section id="auth-view" class="auth-grid">
@@ -108,6 +108,12 @@
             <div class="form-actions"><p id="password-error" class="form-error" role="alert" aria-live="polite"></p><button class="button button-outline" type="submit">Update password</button></div>
           </form>
         </section>
+      </section>
+
+      <section id="admin-view" class="admin-view hidden" aria-labelledby="admin-title">
+        <div class="page-heading"><div><p class="eyebrow">SYSTEM ADMINISTRATION</p><h1 id="admin-title">User management</h1><p class="page-subtitle">Review accounts and recent security relevant activity.</p></div></div>
+        <section class="content-card" aria-labelledby="admin-users-title"><div class="section-heading"><div><h2 id="admin-users-title">Registered users</h2><p class="section-copy">Only account details needed for administration are shown.</p></div></div><div class="table-wrap"><table><thead><tr><th>USER</th><th>EMAIL</th><th>JOINED</th><th>ROLE</th><th>STATUS</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="admin-user-rows"></tbody></table></div><p id="admin-users-empty" class="empty-state hidden">No registered users.</p></section>
+        <section class="content-card admin-activity-card" aria-labelledby="admin-activity-title"><div class="section-heading"><div><h2 id="admin-activity-title">System activity</h2><p class="section-copy">Account, authentication, and expense actions. Financial details are not included.</p></div></div><div class="table-wrap"><table><thead><tr><th>TIME (UTC)</th><th>EVENT</th><th>ACTOR ID</th><th>TARGET ID</th></tr></thead><tbody id="admin-activity-rows"></tbody></table></div><p id="admin-activity-empty" class="empty-state hidden">No activity recorded yet.</p></section>
       </section>
     </section>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

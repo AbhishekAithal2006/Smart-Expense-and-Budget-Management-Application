@@ -132,7 +132,7 @@ async function loadAdminData() {
 async function refresh() {
   try {
     await loadProfile();
-    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets()]);
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets(), loadAnalytics()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
@@ -201,6 +201,59 @@ async function loadSummary() {
   $('#spent-status').textContent = `${summary.expenseCount} ${summary.expenseCount === 1 ? 'transaction' : 'transactions'} this month`;
 }
 
+
+const budgetStatusText = { ok: 'On track', near: 'Near limit', over: 'Over budget' };
+
+function progressBar(percent, status) {
+  const track = element('div', 'analytics-bar');
+  const fill = element('div', `analytics-bar-fill analytics-${status}`);
+  fill.style.width = `${Math.min(Math.max(percent, 0), 100)}%`;
+  track.append(fill);
+  return track;
+}
+
+async function loadAnalytics() {
+  const data = await api('/api/analytics');
+  $('#analytics-total').textContent = money(data.totalSpentCents);
+  $('#analytics-total-count').textContent = `${data.totalCount} ${data.totalCount === 1 ? 'transaction' : 'transactions'}`;
+  $('#analytics-month').textContent = money(data.monthSpentCents);
+  $('#analytics-month-count').textContent = `${data.monthCount} ${data.monthCount === 1 ? 'transaction' : 'transactions'}`;
+  $('#analytics-average').textContent = money(data.monthAverageCents);
+  $('#analytics-largest').textContent = money(data.monthLargestCents);
+
+  const categoryList = $('#analytics-categories');
+  categoryList.replaceChildren();
+  if (data.categories.length === 0) {
+    categoryList.append(element('p', 'section-copy', 'No expenses recorded this month.'));
+  }
+  for (const item of data.categories) {
+    const row = element('div', 'analytics-row');
+    const head = element('div', 'analytics-row-head');
+    head.append(element('span', 'analytics-row-name', item.category), element('strong', '', `${money(item.spentCents)} · ${item.percent}%`));
+    row.append(head, progressBar(item.percent, 'ok'));
+    categoryList.append(row);
+  }
+
+  const budgetList = $('#analytics-budgets');
+  budgetList.replaceChildren();
+  if (data.budgets.length === 0) {
+    budgetList.append(element('p', 'section-copy', 'Create a budget to compare it with your spending.'));
+  }
+  const periodNames = { weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly' };
+  for (const budget of data.budgets) {
+    const row = element('div', 'analytics-row');
+    const head = element('div', 'analytics-row-head');
+    head.append(
+      element('span', 'analytics-row-name', `${periodNames[budget.type] || budget.type} · ${budget.startDate} – ${budget.endDate}`),
+      element('span', `analytics-badge analytics-${budget.status}`, budgetStatusText[budget.status])
+    );
+    const detail = budget.remainingCents >= 0
+      ? `${money(budget.spentCents)} of ${money(budget.amountCents)} spent · ${money(budget.remainingCents)} left`
+      : `${money(budget.spentCents)} of ${money(budget.amountCents)} spent · ${money(-budget.remainingCents)} over`;
+    row.append(head, progressBar(budget.percentUsed, budget.status), element('span', 'analytics-note', detail));
+    budgetList.append(row);
+  }
+}
 
 async function loadProfile() {
   const profile = await api('/api/profile');
@@ -446,7 +499,7 @@ async function deleteBudget(id) {
     });
 
     toast('Budget deleted.');
-    await loadBudgets();
+    await Promise.all([loadBudgets(), loadAnalytics()]);
   } catch (error) {
     toast(error.message);
   }
@@ -676,7 +729,7 @@ $('#budget-form').addEventListener('submit', async (event) => {
     }
 
     resetBudgetForm();
-    await loadBudgets();
+    await Promise.all([loadBudgets(), loadAnalytics()]);
   } catch (error) {
     errorNode.textContent = error.message;
   }

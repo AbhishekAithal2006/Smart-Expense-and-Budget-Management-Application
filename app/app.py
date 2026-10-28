@@ -665,6 +665,86 @@ class Handler(BaseHTTPRequestHandler):
                 "budgets": [dict(row) for row in rows],
             })
             return
+        if path.path == "/api/analytics":
+            session = self._require_session()
+            if session is None:
+                return
+            today = date.today()
+            month = today.strftime("%Y-%m")
+            with db() as conn:
+                totals = conn.execute(
+                    "SELECT COALESCE(SUM(amount_cents),0) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND deleted_at IS NULL",
+                    (session["user_id"],),
+                ).fetchone()
+                month_stats = conn.execute(
+                    "SELECT COALESCE(SUM(amount_cents),0) AS spent, COUNT(*) AS count, COALESCE(MAX(amount_cents),0) AS largest FROM expenses WHERE user_id=? AND deleted_at IS NULL AND substr(spent_on,1,7)=?",
+                    (session["user_id"], month),
+                ).fetchone()
+                category_rows = conn.execute(
+                    "SELECT category, SUM(amount_cents) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND deleted_at IS NULL AND substr(spent_on,1,7)=? GROUP BY category ORDER BY spent DESC, category ASC",
+                    (session["user_id"], month),
+                ).fetchall()
+                budget_rows = conn.execute(
+                    """
+                    SELECT b.id, b.budget_type, b.amount_cents, b.start_date, b.end_date,
+                        COALESCE((
+                            SELECT SUM(e.amount_cents) FROM expenses e
+                            WHERE e.user_id = b.user_id AND e.deleted_at IS NULL
+                                AND e.spent_on >= b.start_date AND e.spent_on <= b.end_date
+                        ), 0) AS spent_cents
+                    FROM budgets b
+                    WHERE b.user_id = ?
+                    ORDER BY b.start_date DESC, b.id DESC
+                    LIMIT 12
+                    """,
+                    (session["user_id"],),
+                ).fetchall()
+            month_spent = int(month_stats["spent"] or 0)
+            month_count = int(month_stats["count"] or 0)
+            categories = [
+                {
+                    "category": row["category"],
+                    "spentCents": int(row["spent"]),
+                    "count": int(row["count"]),
+                    "percent": round(int(row["spent"]) * 100 / month_spent, 1) if month_spent else 0,
+                }
+                for row in category_rows
+            ]
+            budgets = []
+            for row in budget_rows:
+                amount = int(row["amount_cents"])
+                spent = int(row["spent_cents"])
+                percent = round(spent * 100 / amount, 1) if amount else 0
+                if spent > amount:
+                    status = "over"
+                elif percent >= 80:
+                    status = "near"
+                else:
+                    status = "ok"
+                budgets.append({
+                    "id": row["id"],
+                    "type": row["budget_type"],
+                    "amountCents": amount,
+                    "startDate": row["start_date"],
+                    "endDate": row["end_date"],
+                    "spentCents": spent,
+                    "remainingCents": amount - spent,
+                    "percentUsed": percent,
+                    "status": status,
+                    "active": row["start_date"] <= today.isoformat() <= row["end_date"],
+                })
+            self._send(HTTPStatus.OK, {
+                "month": month,
+                "totalSpentCents": int(totals["spent"] or 0),
+                "totalCount": int(totals["count"] or 0),
+                "monthSpentCents": month_spent,
+                "monthCount": month_count,
+                "monthAverageCents": round(month_spent / month_count) if month_count else 0,
+                "monthLargestCents": int(month_stats["largest"] or 0),
+                "categories": categories,
+                "budgets": budgets,
+            })
+            return
         if path.path == "/api/summary":
             session = self._require_session()
             if session is None:

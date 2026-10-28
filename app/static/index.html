@@ -49,6 +49,68 @@
         <article class="summary-card profile-summary-card"><div class="card-top"><span class="card-label">PROFILE</span><span class="card-icon icon-peach">⌁</span></div><p id="profile-name-summary" class="summary-value">—</p><p class="card-caption">your account details</p></article>
       </section>
 
+      <section class="content-card budgets-card" id="budgets-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PLAN YOUR SPENDING</p>
+            <h2>Budget management</h2>
+            <p class="section-copy">Set spending limits and keep track of your financial goals.</p>
+          </div>
+          <span class="section-icon" aria-hidden="true">₹</span>
+        </div>
+
+        <form id="budget-form" class="budget-form">
+          <input id="budget-id" type="hidden" value="">
+
+          <div class="field">
+            <label for="budget-type">Budget period</label>
+            <select id="budget-type" name="budgetType" required>
+              <option value="weekly">Weekly</option>
+              <option value="monthly" selected>Monthly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="budget-amount">Budget amount</label>
+            <div class="amount-input">
+              <span id="budget-currency-symbol">₹</span>
+              <input id="budget-amount" name="amount" type="number"
+                     min="0.01" max="100000000" step="0.01"
+                     placeholder="0.00" required>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="budget-start-date">Start date</label>
+            <input id="budget-start-date" name="startDate" type="date" required>
+          </div>
+
+          <div class="field">
+            <label for="budget-end-date">End date</label>
+            <input id="budget-end-date" name="endDate" type="date" required>
+          </div>
+
+          <div class="form-actions">
+            <p id="budget-error" class="form-error" role="alert"></p>
+            <div>
+              <button id="budget-cancel" class="button button-outline hidden"
+                      type="button">Cancel edit</button>
+              <button id="budget-submit" class="button button-primary"
+                      type="submit">Save budget →</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="budget-list-heading">
+          <h3>Your budgets</h3>
+          <span id="budget-count" class="count-badge">0 budgets</span>
+        </div>
+
+        <div id="budget-list" class="budget-list">
+          <p class="section-copy">Your saved budgets will appear here.</p>
+        </div>
+      </section>
       <section class="content-card form-card" id="expense-form-card">
         <div class="section-heading"><div><p class="eyebrow">QUICK ENTRY</p><h2>Add an expense</h2><p class="section-copy">A few details now make the month easier to understand later.</p></div><span class="section-icon">＋</span></div>
         <form id="expense-form" class="expense-form">

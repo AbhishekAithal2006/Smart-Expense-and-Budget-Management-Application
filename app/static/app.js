@@ -132,7 +132,7 @@ async function loadAdminData() {
 async function refresh() {
   try {
     await loadProfile();
-    await Promise.all([loadCategories(), loadSummary(), loadExpenses()]);
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
@@ -200,6 +200,7 @@ async function loadSummary() {
   $('#month-transaction-count').textContent = summary.expenseCount;
   $('#spent-status').textContent = `${summary.expenseCount} ${summary.expenseCount === 1 ? 'transaction' : 'transactions'} this month`;
 }
+
 
 async function loadProfile() {
   const profile = await api('/api/profile');
@@ -324,6 +325,131 @@ async function loadExpenses() {
 
   emptyState.classList.toggle('hidden', count > 0);
   $('.table-wrap').classList.toggle('hidden', count === 0);
+}
+
+function resetBudgetForm() {
+  $('#budget-form').reset();
+  $('#budget-id').value = '';
+  $('#budget-type').value = 'monthly';
+  $('#budget-error').textContent = '';
+  $('#budget-submit').textContent = 'Save budget →';
+  $('#budget-cancel').classList.add('hidden');
+  setBudgetDates('monthly');
+}
+
+function setBudgetDates(type) {
+  const today = new Date();
+  let start;
+  let end;
+
+  if (type === 'weekly') {
+    const day = today.getDay();
+    const mondayOffset = (day + 6) % 7;
+    start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - mondayOffset);
+    end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+  } else if (type === 'yearly') {
+    start = new Date(today.getFullYear(), 0, 1);
+    end = new Date(today.getFullYear(), 11, 31);
+  } else {
+    start = new Date(today.getFullYear(), today.getMonth(), 1);
+    end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  }
+
+  $('#budget-start-date').value = localDate(start);
+  $('#budget-end-date').value = localDate(end);
+}
+
+async function loadBudgets() {
+  const result = await api('/api/budgets');
+  const list = $('#budget-list');
+  list.replaceChildren();
+
+  const budgets = result.budgets || [];
+  $('#budget-count').textContent =
+    `${budgets.length} ${budgets.length === 1 ? 'budget' : 'budgets'}`;
+
+  if (budgets.length === 0) {
+    list.append(element(
+      'p',
+      'section-copy',
+      'No budgets yet. Create your first budget above.'
+    ));
+    return;
+  }
+
+  const periodNames = {
+    weekly: 'Weekly',
+    monthly: 'Monthly',
+    yearly: 'Yearly'
+  };
+
+  for (const budget of budgets) {
+    const card = element('article', 'budget-item');
+    const details = element('div', 'budget-item-details');
+
+    details.append(
+      element(
+        'span',
+        'budget-period',
+        periodNames[budget.budget_type] || budget.budget_type
+      ),
+      element('strong', 'budget-amount', money(budget.amount_cents)),
+      element(
+        'span',
+        'budget-dates',
+        `${budget.start_date} – ${budget.end_date}`
+      )
+    );
+
+    const actions = element('div', 'row-actions');
+
+    const edit = element('button', 'row-action', 'Edit');
+    edit.type = 'button';
+    edit.addEventListener('click', () => startBudgetEdit(budget));
+
+    const remove = element('button', 'row-action', 'Delete');
+    remove.type = 'button';
+    remove.addEventListener('click', () => deleteBudget(budget.id));
+
+    actions.append(edit, remove);
+    card.append(details, actions);
+    list.append(card);
+  }
+}
+
+function startBudgetEdit(budget) {
+  $('#budget-id').value = budget.id;
+  $('#budget-type').value = budget.budget_type;
+  $('#budget-amount').value = (budget.amount_cents / 100).toFixed(2);
+  $('#budget-start-date').value = budget.start_date;
+  $('#budget-end-date').value = budget.end_date;
+  $('#budget-error').textContent = '';
+  $('#budget-submit').textContent = 'Update budget →';
+  $('#budget-cancel').classList.remove('hidden');
+
+  $('#budgets-section').scrollIntoView({
+    behavior: 'smooth',
+    block: 'center'
+  });
+
+  $('#budget-amount').focus({ preventScroll: true });
+}
+
+async function deleteBudget(id) {
+  if (!window.confirm('Delete this budget? This cannot be undone.')) {
+    return;
+  }
+
+  try {
+    await api(`/api/budgets?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+
+    toast('Budget deleted.');
+    await loadBudgets();
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 async function editExpense(expense) {
@@ -496,6 +622,68 @@ $('#clear-filters').addEventListener('click', async () => {
   $('#month-filter').value = '';
   try { await loadExpenses(); } catch (error) { toast(error.message); }
 });
+
+$('#budget-type').addEventListener('change', (event) => {
+  setBudgetDates(event.currentTarget.value);
+  $('#budget-error').textContent = '';
+});
+
+$('#budget-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const errorNode = $('#budget-error');
+  errorNode.textContent = '';
+
+  const budgetId = $('#budget-id').value;
+  const budgetType = $('#budget-type').value;
+  const amount = $('#budget-amount').value.trim();
+  const startDate = $('#budget-start-date').value;
+  const endDate = $('#budget-end-date').value;
+
+  if (!amount || Number(amount) <= 0) {
+    errorNode.textContent = 'Enter a budget amount greater than zero.';
+    $('#budget-amount').focus();
+    return;
+  }
+
+  if (!startDate || !endDate || startDate > endDate) {
+    errorNode.textContent = 'Choose a valid budget date range.';
+    return;
+  }
+
+  const data = {
+    budgetType,
+    amount,
+    startDate,
+    endDate
+  };
+
+  try {
+    if (budgetId) {
+      await api(`/api/budgets?id=${encodeURIComponent(budgetId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data)
+      });
+
+      toast('Budget updated successfully.');
+    } else {
+      await api('/api/budgets', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+
+      toast('Budget created successfully.');
+    }
+
+    resetBudgetForm();
+    await loadBudgets();
+  } catch (error) {
+    errorNode.textContent = error.message;
+  }
+});
+
+$('#budget-cancel').addEventListener('click', resetBudgetForm);
+
 $('#add-expense-shortcut').addEventListener('click', () => {
   $('#expense-form-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
   $('#expense-amount').focus({ preventScroll: true });

@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null, currencyCode: 'INR' };
+const state = { csrf: '', mode: 'login', page: 'home', toastTimer: null, currencyCode: 'INR', isAdmin: false, userEmail: '' };
 const currencySymbols = { INR: '₹', USD: '$', EUR: '€', GBP: '£' };
 const normalizeCurrencyCode = (value) => Object.hasOwn(currencySymbols, value) ? value : 'INR';
 const money = (cents) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: normalizeCurrencyCode(state.currencyCode), maximumFractionDigits: 2 }).format((cents || 0) / 100);
@@ -40,13 +40,16 @@ function setAuthMode(mode) {
   $('#auth-error').textContent = '';
 }
 
-function showApp(email, fullName = '') {
+function showApp(email, fullName = '', isAdmin = false) {
   $('#auth-view').classList.add('hidden');
   $('#app-view').classList.remove('hidden');
   showPage('home');
   $('#user-email').textContent = email;
+  state.userEmail = String(email || '').toLowerCase();
   $('#user-email').classList.remove('hidden');
   $('#profile-button').classList.remove('hidden');
+  state.isAdmin = Boolean(isAdmin);
+  $('#admin-button').classList.toggle('hidden', !state.isAdmin);
   $('#logout-button').classList.remove('hidden');
   $('#profile-name-summary').textContent = fullName || '—';
   $('#auth-password').value = '';
@@ -62,9 +65,12 @@ function showAuth() {
   $('#user-email').classList.add('hidden');
   $('#profile-button').classList.add('hidden');
   $('#logout-button').classList.add('hidden');
+  $('#admin-button').classList.add('hidden');
   $('#profile-view').classList.add('hidden');
   $('#home-view').classList.remove('hidden');
   state.page = 'home';
+  state.isAdmin = false;
+  state.userEmail = '';
   $('#profile-button').textContent = 'Profile';
   state.csrf = '';
 }
@@ -72,10 +78,55 @@ function showAuth() {
 function showPage(page) {
   state.page = page;
   const isProfile = page === 'profile';
-  $('#home-view').classList.toggle('hidden', isProfile);
+  const isAdminPage = page === 'admin';
+  $('#home-view').classList.toggle('hidden', isProfile || isAdminPage);
   $('#profile-view').classList.toggle('hidden', !isProfile);
-  $('#profile-button').textContent = isProfile ? 'Home' : 'Profile';
-  $('#profile-button').setAttribute('aria-label', isProfile ? 'Return to home dashboard' : 'Open profile');
+  $('#admin-view').classList.toggle('hidden', !isAdminPage);
+  $('#profile-button').textContent = isProfile || isAdminPage ? 'Home' : 'Profile';
+  $('#profile-button').setAttribute('aria-label', isProfile || isAdminPage ? 'Return to home dashboard' : 'Open profile');
+  $('#admin-button').textContent = isAdminPage ? 'Close admin' : 'Admin';
+}
+
+async function loadAdminData() {
+  const [usersData, activityData] = await Promise.all([api('/api/admin/users'), api('/api/admin/activity')]);
+  const userRows = $('#admin-user-rows');
+  userRows.replaceChildren();
+  $('#admin-users-empty').classList.toggle('hidden', usersData.users.length !== 0);
+  for (const user of usersData.users) {
+    const row = document.createElement('tr');
+    row.append(element('td', '', user.full_name));
+    row.append(element('td', '', user.email));
+    row.append(element('td', '', new Date(user.created_at).toLocaleDateString()));
+    row.append(element('td', '', user.is_admin ? 'Administrator' : 'User'));
+    row.append(element('td', '', user.is_suspended ? 'Suspended' : 'Active'));
+    const actions = document.createElement('td');
+    if (!user.is_admin || user.email.toLowerCase() !== state.userEmail) {
+      const button = element('button', 'row-action', user.is_suspended ? 'Reactivate' : 'Suspend');
+      button.type = 'button';
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await api(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ suspended: !user.is_suspended }) });
+          await loadAdminData();
+          toast(user.is_suspended ? 'Account reactivated.' : 'Account suspended and signed out.');
+        } catch (error) { button.disabled = false; toast(error.message); }
+      });
+      actions.append(button);
+    }
+    row.append(actions);
+    userRows.append(row);
+  }
+  const activityRows = $('#admin-activity-rows');
+  activityRows.replaceChildren();
+  $('#admin-activity-empty').classList.toggle('hidden', activityData.events.length !== 0);
+  for (const event of activityData.events) {
+    const row = document.createElement('tr');
+    row.append(element('td', '', new Date(event.created_at).toLocaleString(undefined, { timeZone: 'UTC' })));
+    row.append(element('td', '', event.event_type.replaceAll('_', ' ')));
+    row.append(element('td', '', event.actor_user_id ?? '—'));
+    row.append(element('td', '', event.target_user_id ?? '—'));
+    activityRows.append(row);
+  }
 }
 
 async function refresh() {
@@ -438,7 +489,7 @@ $('#auth-form').addEventListener('submit', async (event) => {
   try {
     const result = await api(state.mode === 'login' ? '/api/login' : '/api/register', { method: 'POST', body: JSON.stringify(data) });
     state.csrf = result.csrfToken;
-    showApp(result.email, result.fullName);
+    showApp(result.email, result.fullName, result.isAdmin);
   } catch (error) { $('#auth-error').textContent = error.message; }
 });
 
@@ -475,10 +526,19 @@ $('#category-form').addEventListener('submit', async (event) => {
 });
 
 $('#profile-button').addEventListener('click', async () => {
-  const nextPage = state.page === 'profile' ? 'home' : 'profile';
+  const nextPage = state.page === 'profile' || state.page === 'admin' ? 'home' : 'profile';
   showPage(nextPage);
   if (nextPage === 'profile') {
     try { await loadProfile(); }
+    catch (error) { toast(error.message); }
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+$('#admin-button').addEventListener('click', async () => {
+  const nextPage = state.page === 'admin' ? 'home' : 'admin';
+  showPage(nextPage);
+  if (nextPage === 'admin') {
+    try { await loadAdminData(); }
     catch (error) { toast(error.message); }
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -658,7 +718,7 @@ if (googleError || emailVerified || emailError) window.history.replaceState(null
 
 api('/api/me').then((session) => {
   state.csrf = session.csrfToken || '';
-  if (session.authenticated) showApp(session.email);
+  if (session.authenticated) showApp(session.email, '', session.isAdmin);
   if (emailVerified) {
     if (session.authenticated) toast('Your email address has been verified.');
     else $('#auth-error').textContent = 'Your email address is verified. Sign in with the new address.';

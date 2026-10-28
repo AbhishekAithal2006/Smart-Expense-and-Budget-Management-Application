@@ -1644,6 +1644,10 @@ button[aria-label^="Delete "].row-action:hover {
   }
 }
 
+/* Administrator user and activity views */
+.admin-view{max-width:1120px;margin:34px auto 0}.admin-view>.content-card{margin-top:16px}.admin-activity-card{margin-bottom:24px}.admin-view .page-heading h1{margin:0;color:var(--ink);font:700 27px Manrope,sans-serif;letter-spacing:-.7px}.admin-view td{overflow-wrap:anywhere}
+@media(max-width:650px){.admin-view{margin-top:24px}.admin-view .page-heading h1{font-size:22px}}
+
 /* Category management */
 .category-form {
   display: grid;

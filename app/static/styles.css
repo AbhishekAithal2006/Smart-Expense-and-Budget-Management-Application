@@ -1859,3 +1859,127 @@ button[aria-label^="Delete "].row-action:hover {
     width: 100%;
   }
 }
+/* Expense and budget analytics (FR11) */
+.analytics-card {
+  margin-top: 22px;
+}
+
+.analytics-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.analytics-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--white);
+}
+
+.analytics-stat strong {
+  font-size: 1.35rem;
+  overflow-wrap: anywhere;
+}
+
+.analytics-note {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.analytics-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+
+.analytics-subtitle {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.analytics-list {
+  display: grid;
+  gap: 14px;
+}
+
+.analytics-row {
+  display: grid;
+  gap: 6px;
+}
+
+.analytics-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.9rem;
+}
+
+.analytics-row-name {
+  overflow-wrap: anywhere;
+}
+
+.analytics-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.analytics-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.analytics-bar-fill.analytics-ok {
+  background: var(--green);
+}
+
+.analytics-bar-fill.analytics-near {
+  background: #d9922b;
+}
+
+.analytics-bar-fill.analytics-over {
+  background: var(--red);
+}
+
+.analytics-badge {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.analytics-badge.analytics-ok {
+  background: var(--mint);
+  color: var(--green-dark);
+}
+
+.analytics-badge.analytics-near {
+  background: var(--peach);
+  color: #8a5a12;
+}
+
+.analytics-badge.analytics-over {
+  background: #f6dedb;
+  color: var(--red);
+}
+
+@media (max-width: 900px) {
+  .analytics-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.analytics-card .section-heading {
+  margin-bottom: 20px;
+}

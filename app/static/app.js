@@ -132,7 +132,7 @@ async function loadAdminData() {
 async function refresh() {
   try {
     await loadProfile();
-    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets(), loadAnalytics()]);
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets(), loadAnalytics(), loadAlerts()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
@@ -253,6 +253,38 @@ async function loadAnalytics() {
     row.append(head, progressBar(budget.percentUsed, budget.status), element('span', 'analytics-note', detail));
     budgetList.append(row);
   }
+}
+
+const seenAlerts = new Set();
+let alertsUser = null;
+
+async function loadAlerts() {
+  const data = await api('/api/alerts');
+  const panel = $('#budget-alerts');
+  panel.replaceChildren();
+  panel.classList.toggle('hidden', data.alerts.length === 0);
+  const periodNames = { weekly: 'weekly', monthly: 'monthly', yearly: 'yearly' };
+  const newMessages = [];
+  const silent = alertsUser !== state.userEmail;
+  if (silent) seenAlerts.clear();
+  alertsUser = state.userEmail;
+  for (const alert of data.alerts) {
+    const period = `${periodNames[alert.budgetType] || alert.budgetType} budget (${alert.startDate} – ${alert.endDate})`;
+    const exceeded = alert.level === 'exceeded';
+    const title = exceeded ? 'Budget exceeded' : 'Budget warning';
+    const text = exceeded
+      ? `You have spent ${money(alert.spentCents)} of your ${money(alert.amountCents)} ${period}. You are ${money(-alert.remainingCents)} over.`
+      : `You have used ${alert.percentUsed}% of your ${money(alert.amountCents)} ${period}. ${money(alert.remainingCents)} left.`;
+    const item = element('article', `alert-item alert-${alert.level}`);
+    item.append(element('strong', 'alert-title', title), element('span', 'alert-text', text));
+    panel.append(item);
+    const key = `${alert.budgetId}:${alert.level}`;
+    if (!seenAlerts.has(key)) {
+      seenAlerts.add(key);
+      if (!silent) newMessages.push(`${title}: ${text}`);
+    }
+  }
+  if (newMessages.length > 0) toast(newMessages[0]);
 }
 
 async function loadProfile() {
@@ -499,7 +531,7 @@ async function deleteBudget(id) {
     });
 
     toast('Budget deleted.');
-    await Promise.all([loadBudgets(), loadAnalytics()]);
+    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts()]);
   } catch (error) {
     toast(error.message);
   }
@@ -729,7 +761,7 @@ $('#budget-form').addEventListener('submit', async (event) => {
     }
 
     resetBudgetForm();
-    await Promise.all([loadBudgets(), loadAnalytics()]);
+    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts()]);
   } catch (error) {
     errorNode.textContent = error.message;
   }

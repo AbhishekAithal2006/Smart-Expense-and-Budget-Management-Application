@@ -1983,3 +1983,40 @@ button[aria-label^="Delete "].row-action:hover {
 .analytics-card .section-heading {
   margin-bottom: 20px;
 }
+/* Budget alerts (FR10) */
+.budget-alerts {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.alert-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  border-left-width: 6px;
+}
+
+.alert-title {
+  font-size: 0.95rem;
+}
+
+.alert-text {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.alert-item.alert-warning {
+  background: var(--peach);
+  border-color: #e6c7a8;
+  color: #7a4d10;
+}
+
+.alert-item.alert-exceeded {
+  background: #f6dedb;
+  border-color: #e3b0aa;
+  color: var(--red);
+}

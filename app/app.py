@@ -49,6 +49,7 @@ SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USERNAME)
 APP_BASE_URL = os.environ.get("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")
 EMAIL_CHANGE_TTL = 60 * 60
 PREDEFINED_CATEGORIES = ("Food", "Travel", "Shopping", "Medical", "Entertainment", "Home", "Utilities", "Other")
+BUDGET_ALERT_THRESHOLD_PERCENT = 80  # warn the user once spending reaches this share of a budget
 CATEGORY_NAME_RE = re.compile(r"^[\w][\w &'()+,.-]{0,39}$", re.UNICODE)
 
 
@@ -663,6 +664,53 @@ class Handler(BaseHTTPRequestHandler):
 
             self._send(HTTPStatus.OK, {
                 "budgets": [dict(row) for row in rows],
+            })
+            return
+        if path.path == "/api/alerts":
+            session = self._require_session()
+            if session is None:
+                return
+            today = date.today().isoformat()
+            with db() as conn:
+                budget_rows = conn.execute(
+                    """
+                    SELECT b.id, b.budget_type, b.amount_cents, b.start_date, b.end_date,
+                        COALESCE((
+                            SELECT SUM(e.amount_cents) FROM expenses e
+                            WHERE e.user_id = b.user_id AND e.deleted_at IS NULL
+                                AND e.spent_on >= b.start_date AND e.spent_on <= b.end_date
+                        ), 0) AS spent_cents
+                    FROM budgets b
+                    WHERE b.user_id = ? AND b.start_date <= ? AND b.end_date >= ?
+                    ORDER BY b.end_date ASC, b.id ASC
+                    """,
+                    (session["user_id"], today, today),
+                ).fetchall()
+            alerts = []
+            for row in budget_rows:
+                amount = int(row["amount_cents"])
+                spent = int(row["spent_cents"])
+                percent = round(spent * 100 / amount, 1) if amount else 0
+                if spent > amount:
+                    level = "exceeded"
+                elif percent >= BUDGET_ALERT_THRESHOLD_PERCENT:
+                    level = "warning"
+                else:
+                    continue
+                alerts.append({
+                    "budgetId": row["id"],
+                    "level": level,
+                    "budgetType": row["budget_type"],
+                    "startDate": row["start_date"],
+                    "endDate": row["end_date"],
+                    "amountCents": amount,
+                    "spentCents": spent,
+                    "remainingCents": amount - spent,
+                    "percentUsed": percent,
+                })
+            self._send(HTTPStatus.OK, {
+                "thresholdPercent": BUDGET_ALERT_THRESHOLD_PERCENT,
+                "alerts": alerts,
             })
             return
         if path.path == "/api/analytics":

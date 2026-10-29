@@ -132,7 +132,7 @@ async function loadAdminData() {
 async function refresh() {
   try {
     await loadProfile();
-    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets(), loadAnalytics(), loadAlerts()]);
+    await Promise.all([loadCategories(), loadSummary(), loadExpenses(),loadBudgets(), loadAnalytics(), loadAlerts(), loadNotifications()]);
   } catch (error) {
     if (error.message.includes('log in')) showAuth();
     else toast(error.message);
@@ -285,6 +285,32 @@ async function loadAlerts() {
     }
   }
   if (newMessages.length > 0) toast(newMessages[0]);
+}
+
+async function loadNotifications() {
+  const data = await api('/api/notifications');
+  const panel = $('#notification-list');
+  panel.replaceChildren();
+  if (data.notifications.length === 0) {
+    panel.append(element('p', 'section-copy', 'No saved budget notifications yet.'));
+    return;
+  }
+  const periodNames = { weekly: 'weekly', monthly: 'monthly', yearly: 'yearly' };
+  for (const notification of data.notifications) {
+    const period = `${periodNames[notification.budget_type] || notification.budget_type} budget (${notification.start_date} – ${notification.end_date})`;
+    const exceeded = notification.event_type === 'exceeded';
+    const title = exceeded ? 'Budget exceeded' : 'Budget warning';
+    const text = exceeded
+      ? `You had spent ${money(notification.spent_cents)} of ${money(notification.budget_amount_cents)} for your ${period}. ${money(-notification.remaining_cents)} over.`
+      : `You had used ${notification.percent_used}% of ${money(notification.budget_amount_cents)} for your ${period}. ${money(notification.remaining_cents)} left.`;
+    const item = element('article', `notification-item notification-${notification.event_type}`);
+    item.append(
+      element('strong', 'notification-title', title),
+      element('span', 'notification-text', text),
+      element('time', 'notification-time', new Date(notification.created_at).toLocaleString())
+    );
+    panel.append(item);
+  }
 }
 
 async function loadProfile() {
@@ -531,7 +557,7 @@ async function deleteBudget(id) {
     });
 
     toast('Budget deleted.');
-    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts()]);
+    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts(), loadNotifications()]);
   } catch (error) {
     toast(error.message);
   }
@@ -761,7 +787,7 @@ $('#budget-form').addEventListener('submit', async (event) => {
     }
 
     resetBudgetForm();
-    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts()]);
+    await Promise.all([loadBudgets(), loadAnalytics(), loadAlerts(), loadNotifications()]);
   } catch (error) {
     errorNode.textContent = error.message;
   }

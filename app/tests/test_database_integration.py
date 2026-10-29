@@ -47,7 +47,7 @@ class DatabaseIntegrationTests(unittest.TestCase):
             }
 
         self.assertTrue(
-            {"users", "sessions", "expenses", "user_categories"}.issubset(tables)
+            {"users", "sessions", "expenses", "budgets", "notifications", "user_categories"}.issubset(tables)
         )
 
     def test_user_and_expense_persist_after_reopening_connection(self):

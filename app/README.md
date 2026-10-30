@@ -98,6 +98,46 @@ python3 app.py
 
 Port `587` uses STARTTLS; port `465` uses SMTP over TLS. For a deployed app, set `APP_BASE_URL` to its public HTTPS origin. Keep SMTP credentials in environment secrets and out of Git. Without SMTP configuration, the app will not change the email and will show an error when a user requests an email change.
 
+## Database Backup and Recovery
+
+### Creating a Database Backup
+
+The application uses PostgreSQL's `pg_dump` utility to create database backups in custom format.
+
+The backup function:
+- Validates the database connection configuration.
+- Creates the destination directory if it does not exist.
+- Uses PostgreSQL connection details from `DATABASE_URL`.
+- Creates a custom-format backup using `pg_dump`.
+
+Example backup command:
+
+```bash
+pg_dump --format=custom --file backups/tracker-backup.dump
+```
+
+### Restoring a Database Backup
+
+Use PostgreSQL's `pg_restore` utility to restore a backup into a target database.
+
+```bash
+pg_restore --clean --if-exists --no-owner --dbname "$DATABASE_URL" backups/tracker-backup.dump
+```
+
+**Important:** Verify the target database before restoring. The restore operation can replace existing database objects and data.
+
+### Backup and Recovery Verification
+
+Backup and recovery were tested using separate PostgreSQL databases.
+
+1. Created a database containing application tables and sample user, expense, and budget records.
+2. Generated a custom-format backup using `pg_dump`.
+3. Created a separate recovery database.
+4. Restored the backup using `pg_restore`.
+5. Verified that user, expense and budget records were recovered correctly.
+
+The recovery test confirmed that stored application data could be restored successfully.
+
 ## Deployment note
 
 The built-in HTTP server is for local development and demonstrations. Before binding beyond localhost, configure a unique `SESSION_SECRET`, set `SECURE_COOKIE=1`, and place the server behind an HTTPS reverse proxy. Do not deploy the development server directly to the public internet.

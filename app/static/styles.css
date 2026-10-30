@@ -1859,6 +1859,50 @@ button[aria-label^="Delete "].row-action:hover {
     width: 100%;
   }
 }
+/* Expense and budget reports (FR12) */
+.reports-card {
+  margin-top: 22px;
+}
+
+.report-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.report-form .report-action .button {
+  width: 100%;
+}
+
+.report-output {
+  margin-top: 22px;
+}
+
+.report-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.report-heading .analytics-subtitle {
+  margin: 0;
+}
+
+.report-output .analytics-columns,
+.report-output .table-wrap {
+  margin-bottom: 22px;
+}
+
+@media (max-width: 640px) {
+  .report-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Expense and budget analytics (FR11) */
 .analytics-card {
   margin-top: 22px;

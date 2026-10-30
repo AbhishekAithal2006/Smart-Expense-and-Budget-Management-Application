@@ -143,6 +143,38 @@
           </div>
         </div>
       </section>
+      <section class="content-card reports-card" id="reports-section" aria-labelledby="reports-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">REPORTS</p>
+            <h2 id="reports-title">Expense and budget reports</h2>
+            <p class="section-copy">Generate a monthly or yearly report of your expenses and budgets.</p>
+          </div>
+          <span class="section-icon" aria-hidden="true">≡</span>
+        </div>
+        <form id="report-form" class="report-form" novalidate>
+          <div class="field">
+            <label for="report-type">Report type</label>
+            <select id="report-type" name="reportType">
+              <option value="monthly" selected>Monthly report</option>
+              <option value="yearly">Yearly report</option>
+            </select>
+          </div>
+          <div class="field" id="report-month-field">
+            <label for="report-month">Month</label>
+            <input id="report-month" name="reportMonth" type="month">
+          </div>
+          <div class="field hidden" id="report-year-field">
+            <label for="report-year">Year</label>
+            <input id="report-year" name="reportYear" type="number" min="2000" max="2100" step="1" inputmode="numeric">
+          </div>
+          <div class="field report-action">
+            <button id="report-submit" class="button button-primary" type="submit">Generate report</button>
+          </div>
+        </form>
+        <p id="report-error" class="form-error" role="alert"></p>
+        <div id="report-output" class="report-output" aria-live="polite"></div>
+      </section>
       <section class="content-card form-card" id="expense-form-card">
         <div class="section-heading"><div><p class="eyebrow">QUICK ENTRY</p><h2>Add an expense</h2><p class="section-copy">A few details now make the month easier to understand later.</p></div><span class="section-icon">＋</span></div>
         <form id="expense-form" class="expense-form">

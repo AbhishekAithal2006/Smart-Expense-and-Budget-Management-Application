@@ -24,6 +24,7 @@ from urllib.request import Request as UrlRequest, urlopen
 import psycopg
 from psycopg.rows import dict_row
 from datetime import date, datetime, timedelta, timezone
+from functools import wraps
 
 ROOT = Path(__file__).resolve().parent
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -386,6 +387,26 @@ def _resolve_category(conn: DatabaseConnection, user_id: int, value: object) -> 
     return row["name"] if row else None
 
 
+def handle_database_errors(handler):
+    """Return a safe response when a database operation fails."""
+    @wraps(handler)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return handler(self, *args, **kwargs)
+        except psycopg.Error as error:
+            self.log_error(
+                "Database request failed (%s)",
+                type(error).__name__,
+            )
+            self._send(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "error": "Database temporarily unavailable. Please try again."
+                },
+            )
+
+    return wrapper
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SmartExpense/1.0"
 
@@ -597,6 +618,7 @@ class Handler(BaseHTTPRequestHandler):
             return f"session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
         return f"session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}{secure}"
 
+    @handle_database_errors
     def do_GET(self) -> None:
         path = urlparse(self.path)
         if path.path == "/auth/email/verify":
@@ -1014,7 +1036,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         self.send_error(HTTPStatus.NOT_FOUND)
-
+    @handle_database_errors
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         if not _same_origin_request(self):
@@ -1260,6 +1282,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
+    @handle_database_errors
     def do_PATCH(self) -> None:
         path = urlparse(self.path).path
         if not _same_origin_request(self):
@@ -1497,6 +1520,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(HTTPStatus.OK, {"ok": True})
 
+    @handle_database_errors
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
 

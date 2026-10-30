@@ -6,3 +6,4 @@ data/
 *.sqlite3-wal
 .env
 .DS_Store
+backups/

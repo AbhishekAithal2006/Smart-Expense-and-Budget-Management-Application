@@ -878,6 +878,128 @@ class Handler(BaseHTTPRequestHandler):
                 "budgets": budgets,
             })
             return
+        if path.path == "/api/report":
+            session = self._require_session()
+            if session is None:
+                return
+            query = parse_qs(path.query)
+            report_type = (query.get("type", [""])[0]).strip().lower()
+            period = (query.get("period", [""])[0]).strip()
+            try:
+                if report_type == "monthly":
+                    if not re.fullmatch(r"\d{4}-\d{2}", period):
+                        raise ValueError
+                    year, month_number = int(period[:4]), int(period[5:])
+                    if not 2000 <= year <= 2100:
+                        raise ValueError
+                    start = date(year, month_number, 1)
+                    next_month = date(year + (month_number == 12), month_number % 12 + 1, 1)
+                    end = date.fromordinal(next_month.toordinal() - 1)
+                elif report_type == "yearly":
+                    if not re.fullmatch(r"\d{4}", period):
+                        raise ValueError
+                    year = int(period)
+                    if not 2000 <= year <= 2100:
+                        raise ValueError
+                    start, end = date(year, 1, 1), date(year, 12, 31)
+                else:
+                    raise ValueError
+            except ValueError:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "Choose a valid month or year for the report."})
+                return
+            start_text, end_text = start.isoformat(), end.isoformat()
+            with db() as conn:
+                totals = conn.execute(
+                    "SELECT COALESCE(SUM(amount_cents),0) AS spent, COUNT(*) AS count, COALESCE(MAX(amount_cents),0) AS largest FROM expenses WHERE user_id=? AND deleted_at IS NULL AND spent_on>=? AND spent_on<=?",
+                    (session["user_id"], start_text, end_text),
+                ).fetchone()
+                category_rows = conn.execute(
+                    "SELECT category, SUM(amount_cents) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND deleted_at IS NULL AND spent_on>=? AND spent_on<=? GROUP BY category ORDER BY spent DESC, category ASC",
+                    (session["user_id"], start_text, end_text),
+                ).fetchall()
+                month_rows = []
+                expense_rows = []
+                if report_type == "yearly":
+                    month_rows = conn.execute(
+                        "SELECT substr(spent_on,1,7) AS month, SUM(amount_cents) AS spent, COUNT(*) AS count FROM expenses WHERE user_id=? AND deleted_at IS NULL AND spent_on>=? AND spent_on<=? GROUP BY substr(spent_on,1,7) ORDER BY month ASC",
+                        (session["user_id"], start_text, end_text),
+                    ).fetchall()
+                else:
+                    expense_rows = conn.execute(
+                        "SELECT id, amount_cents, category, spent_on, payment_method, description FROM expenses WHERE user_id=? AND deleted_at IS NULL AND spent_on>=? AND spent_on<=? ORDER BY spent_on DESC, id DESC LIMIT 500",
+                        (session["user_id"], start_text, end_text),
+                    ).fetchall()
+                budget_rows = conn.execute(
+                    """
+                    SELECT b.id, b.budget_type, b.amount_cents, b.start_date, b.end_date,
+                        COALESCE((
+                            SELECT SUM(e.amount_cents) FROM expenses e
+                            WHERE e.user_id = b.user_id AND e.deleted_at IS NULL
+                                AND e.spent_on >= b.start_date AND e.spent_on <= b.end_date
+                        ), 0) AS spent_cents
+                    FROM budgets b
+                    WHERE b.user_id = ? AND b.start_date <= ? AND b.end_date >= ?
+                    ORDER BY b.start_date ASC, b.id ASC
+                    LIMIT 50
+                    """,
+                    (session["user_id"], end_text, start_text),
+                ).fetchall()
+            total_spent = int(totals["spent"] or 0)
+            total_count = int(totals["count"] or 0)
+            categories = [
+                {
+                    "category": row["category"],
+                    "spentCents": int(row["spent"]),
+                    "count": int(row["count"]),
+                    "percent": round(int(row["spent"]) * 100 / total_spent, 1) if total_spent else 0,
+                }
+                for row in category_rows
+            ]
+            months = []
+            if report_type == "yearly":
+                by_month = {row["month"]: row for row in month_rows}
+                for number in range(1, 13):
+                    key = f"{year}-{number:02d}"
+                    row = by_month.get(key)
+                    months.append({
+                        "month": key,
+                        "spentCents": int(row["spent"]) if row else 0,
+                        "count": int(row["count"]) if row else 0,
+                    })
+            budgets = []
+            for row in budget_rows:
+                amount = int(row["amount_cents"])
+                spent = int(row["spent_cents"])
+                percent = round(spent * 100 / amount, 1) if amount else 0
+                status = "over" if spent > amount else ("near" if percent >= 80 else "ok")
+                budgets.append({
+                    "id": row["id"],
+                    "type": row["budget_type"],
+                    "amountCents": amount,
+                    "startDate": row["start_date"],
+                    "endDate": row["end_date"],
+                    "spentCents": spent,
+                    "remainingCents": amount - spent,
+                    "percentUsed": percent,
+                    "status": status,
+                })
+            self._send(HTTPStatus.OK, {
+                "type": report_type,
+                "period": period,
+                "startDate": start_text,
+                "endDate": end_text,
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "totalSpentCents": total_spent,
+                "expenseCount": total_count,
+                "averageCents": round(total_spent / total_count) if total_count else 0,
+                "largestCents": int(totals["largest"] or 0),
+                "categories": categories,
+                "months": months,
+                "expenses": [dict(row) for row in expense_rows],
+                "expensesTruncated": report_type == "monthly" and total_count > len(expense_rows),
+                "budgets": budgets,
+            })
+            return
         if path.path == "/api/summary":
             session = self._require_session()
             if session is None:

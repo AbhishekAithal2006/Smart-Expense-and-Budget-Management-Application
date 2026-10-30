@@ -389,6 +389,145 @@ function addActionCell(row, expense) {
   row.append(cell);
 }
 
+function reportPeriodLabel(type, period) {
+  if (type === 'yearly') return period;
+  const [year, month] = period.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+}
+
+function reportStat(label, value, note) {
+  const card = element('article', 'analytics-stat');
+  card.append(element('span', 'card-label', label), element('strong', '', value), element('span', 'analytics-note', note));
+  return card;
+}
+
+function reportTable(headings, rows, rightAligned) {
+  const wrap = element('div', 'table-wrap');
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  headings.forEach((text, index) => {
+    const cell = element('th', rightAligned.includes(index) ? 'align-right' : '', text);
+    head.append(cell);
+  });
+  const thead = document.createElement('thead');
+  thead.append(head);
+  const tbody = document.createElement('tbody');
+  for (const values of rows) {
+    const row = document.createElement('tr');
+    values.forEach((text, index) => row.append(element('td', rightAligned.includes(index) ? 'align-right' : '', text)));
+    tbody.append(row);
+  }
+  table.append(thead, tbody);
+  wrap.append(table);
+  return wrap;
+}
+
+function renderReport(report) {
+  const output = $('#report-output');
+  output.replaceChildren();
+  const title = `${report.type === 'yearly' ? 'Yearly' : 'Monthly'} report: ${reportPeriodLabel(report.type, report.period)}`;
+  const heading = element('div', 'report-heading');
+  heading.append(
+    element('h3', 'analytics-subtitle', title),
+    element('span', 'analytics-note', `${report.startDate} to ${report.endDate} · generated ${new Date(report.generatedAt).toLocaleString('en-IN')}`)
+  );
+  const stats = element('div', 'analytics-stats');
+  stats.append(
+    reportStat('TOTAL EXPENSES', money(report.totalSpentCents), `${report.expenseCount} ${report.expenseCount === 1 ? 'transaction' : 'transactions'}`),
+    reportStat('AVERAGE EXPENSE', money(report.averageCents), 'per transaction'),
+    reportStat('LARGEST EXPENSE', money(report.largestCents), 'in this period'),
+    reportStat('BUDGETS', String(report.budgets.length), 'overlapping this period')
+  );
+  output.append(heading, stats);
+
+  if (report.expenseCount === 0) {
+    output.append(element('p', 'section-copy', 'No expenses were recorded in this period.'));
+  }
+
+  const columns = element('div', 'analytics-columns');
+  const categoryColumn = element('div');
+  categoryColumn.append(element('h3', 'analytics-subtitle', 'Spending by category'));
+  const categoryList = element('div', 'analytics-list');
+  if (report.categories.length === 0) categoryList.append(element('p', 'section-copy', 'No category data for this period.'));
+  for (const item of report.categories) {
+    const row = element('div', 'analytics-row');
+    const head = element('div', 'analytics-row-head');
+    head.append(element('span', 'analytics-row-name', item.category), element('strong', '', `${money(item.spentCents)} · ${item.percent}%`));
+    row.append(head, progressBar(item.percent, 'ok'));
+    categoryList.append(row);
+  }
+  categoryColumn.append(categoryList);
+
+  const budgetColumn = element('div');
+  budgetColumn.append(element('h3', 'analytics-subtitle', 'Budgets'));
+  const budgetList = element('div', 'analytics-list');
+  if (report.budgets.length === 0) budgetList.append(element('p', 'section-copy', 'No budgets cover this period.'));
+  const periodNames = { weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly' };
+  for (const budget of report.budgets) {
+    const row = element('div', 'analytics-row');
+    const head = element('div', 'analytics-row-head');
+    head.append(
+      element('span', 'analytics-row-name', `${periodNames[budget.type] || budget.type} · ${budget.startDate} – ${budget.endDate}`),
+      element('span', `analytics-badge analytics-${budget.status}`, budgetStatusText[budget.status])
+    );
+    const detail = budget.remainingCents >= 0
+      ? `${money(budget.spentCents)} of ${money(budget.amountCents)} spent · ${money(budget.remainingCents)} left`
+      : `${money(budget.spentCents)} of ${money(budget.amountCents)} spent · ${money(-budget.remainingCents)} over`;
+    row.append(head, progressBar(budget.percentUsed, budget.status), element('span', 'analytics-note', detail));
+    budgetList.append(row);
+  }
+  budgetColumn.append(budgetList);
+  columns.append(categoryColumn, budgetColumn);
+  output.append(columns);
+
+  if (report.type === 'yearly') {
+    output.append(element('h3', 'analytics-subtitle', 'Month by month'));
+    const rows = report.months.map((item) => [reportPeriodLabel('monthly', item.month), String(item.count), money(item.spentCents)]);
+    output.append(reportTable(['MONTH', 'TRANSACTIONS', 'TOTAL'], rows, [1, 2]));
+  } else if (report.expenses.length > 0) {
+    output.append(element('h3', 'analytics-subtitle', 'Expenses'));
+    const rows = report.expenses.map((item) => [item.spent_on, item.description ? `${item.category} · ${item.description}` : item.category, item.payment_method || '—', money(item.amount_cents)]);
+    output.append(reportTable(['DATE', 'EXPENSE', 'PAYMENT', 'AMOUNT'], rows, [3]));
+    if (report.expensesTruncated) output.append(element('p', 'analytics-note', 'Only the 500 most recent expenses are listed. Totals include every expense.'));
+  }
+}
+
+function syncReportFields() {
+  const yearly = $('#report-type').value === 'yearly';
+  $('#report-month-field').classList.toggle('hidden', yearly);
+  $('#report-year-field').classList.toggle('hidden', !yearly);
+}
+
+$('#report-type').addEventListener('change', () => {
+  $('#report-error').textContent = '';
+  syncReportFields();
+});
+$('#report-month').value = monthNow();
+$('#report-year').value = new Date().getFullYear();
+
+$('#report-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const error = $('#report-error');
+  error.textContent = '';
+  const type = $('#report-type').value;
+  const period = type === 'yearly' ? $('#report-year').value.trim() : $('#report-month').value;
+  const valid = type === 'yearly' ? /^\d{4}$/.test(period) && Number(period) >= 2000 && Number(period) <= 2100 : /^\d{4}-\d{2}$/.test(period);
+  if (!valid) {
+    error.textContent = type === 'yearly' ? 'Enter a valid year between 2000 and 2100.' : 'Choose a valid month for the report.';
+    return;
+  }
+  const button = $('#report-submit');
+  button.disabled = true;
+  try {
+    const report = await api(`/api/report?type=${encodeURIComponent(type)}&period=${encodeURIComponent(period)}`);
+    renderReport(report);
+  } catch (failure) {
+    error.textContent = failure.message || 'The report could not be generated. Please try again.';
+  } finally {
+    button.disabled = false;
+  }
+});
+
 async function loadExpenses() {
   const params = new URLSearchParams();
   if ($('#search-input').value.trim()) params.set('q', $('#search-input').value.trim());

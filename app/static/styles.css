@@ -2020,3 +2020,40 @@ button[aria-label^="Delete "].row-action:hover {
   border-color: #e3b0aa;
   color: var(--red);
 }
+
+.notifications-card {
+  margin: 0 0 22px;
+}
+
+.notification-list {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-item {
+  display: grid;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid #e6c7a8;
+  border-left: 5px solid #d9922b;
+  border-radius: 12px;
+  background: var(--peach);
+  color: #7a4d10;
+}
+
+.notification-item.notification-exceeded {
+  border-color: #e3b0aa;
+  border-left-color: var(--red);
+  background: #f6dedb;
+  color: var(--red);
+}
+
+.notification-text,
+.notification-time {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.notification-time {
+  opacity: 0.8;
+}

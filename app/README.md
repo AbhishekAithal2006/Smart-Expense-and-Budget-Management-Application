@@ -19,7 +19,7 @@ set +a
 python3 app.py
 ```
 
-The Compose file starts PostgreSQL on `127.0.0.1:5432` with a persistent Docker volume. The sample credentials are for local development only. The app creates its tables and indexes on first launch. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and create an account. Docker Compose is one local setup option; any PostgreSQL server can be used by setting `DATABASE_URL` to its connection URL.
+The Compose file starts PostgreSQL on `127.0.0.1:5432` with a persistent Docker volume. The sample credentials are for local development only. The app applies its initial versioned PostgreSQL schema migration on first launch and applies any pending migrations on later launches. Open [http://127.0.0.1:8000](http://127.0.0.1:8000) and create an account. Docker Compose is one local setup option; any PostgreSQL server can be used by setting `DATABASE_URL` to its connection URL.
 
 Do not commit `.env` or put a production database password in source control. For a hosted database, use the provider's TLS connection URL (usually with `sslmode=require`) and keep it in an environment secret.
 
@@ -97,6 +97,26 @@ python3 app.py
 ```
 
 Port `587` uses STARTTLS; port `465` uses SMTP over TLS. For a deployed app, set `APP_BASE_URL` to its public HTTPS origin. Keep SMTP credentials in environment secrets and out of Git. Without SMTP configuration, the app will not change the email and will show an error when a user requests an email change.
+
+## PostgreSQL schema migrations
+
+Schema changes are managed by the ordered migrations in app/db_migrations/. On startup, initialize() applies pending migrations in ascending version order. The schema_migrations table records each successfully applied version. Each migration and its history row run in one PostgreSQL transaction; if a migration fails, its schema changes are rolled back and that version remains pending. Existing installations receive the baseline migration, whose IF NOT EXISTS DDL preserves the current schema and data.
+
+Before applying a future migration to an important database, take and verify a backup using the backup procedure below. Do not edit a migration after it has been applied to a shared database; add a new migration instead.
+
+### Adding a future migration
+
+1. Add a module such as app/db_migrations/v0002_add_example_column.py with an apply(conn) function. Use conn.execute(...) for the migration statements.
+2. Register it in app/db_migrations/__init__.py with the next increasing integer version and a stable descriptive name.
+3. Add integration tests for a fresh database, an existing database upgrade, repeat startup, and rollback on failure when relevant.
+4. Run the database integration tests and the full suite against a dedicated PostgreSQL test database before deployment.
+
+From the app directory, run the database integration tests and full suite with:
+
+    python -m unittest discover -s tests -p test_database_integration.py -v
+    python -m unittest discover -s tests -v
+
+Set TEST_DATABASE_URL to a dedicated PostgreSQL test database first. The tests create and remove isolated schemas; never point it at development or production data.
 
 ## Database Backup and Recovery
 

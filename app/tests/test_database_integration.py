@@ -7,11 +7,13 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from unittest.mock import patch
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import app
+import db_migrations
 
 
 class DatabaseIntegrationTests(unittest.TestCase):
@@ -32,6 +34,7 @@ class DatabaseIntegrationTests(unittest.TestCase):
         app.initialize()
 
     def tearDown(self):
+        app.close_database_pool()
         with psycopg.connect(self.test_database_url, autocommit=True) as connection:
             connection.execute(
                 sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(self.schema))
@@ -54,6 +57,134 @@ class DatabaseIntegrationTests(unittest.TestCase):
         self.assertTrue(
             {"users", "sessions", "expenses", "budgets", "notifications", "user_categories"}.issubset(tables)
         )
+
+    def _recreate_current_schema(self):
+        with psycopg.connect(self.test_database_url, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(self.schema))
+            )
+            connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(self.schema)))
+        app.DATABASE_URL = make_conninfo(
+            self.test_database_url,
+            options=f"-c search_path={self.schema}",
+        )
+
+    def test_fresh_database_applies_baseline_migration(self):
+        self._recreate_current_schema()
+
+        app.initialize()
+
+        with app.db() as conn:
+            tables = {
+                row["table_name"]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=current_schema()"
+                )
+            }
+            migrations = conn.execute(
+                "SELECT version,name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+
+        self.assertTrue(
+            {
+                "users", "sessions", "expenses", "budgets", "notifications",
+                "user_categories", "login_attempts", "email_change_requests",
+                "system_activity", "schema_migrations",
+            }.issubset(tables)
+        )
+        self.assertEqual(
+            migrations,
+            [{"version": 1, "name": "initial_schema"}],
+        )
+
+    def test_applied_migration_is_not_executed_again(self):
+        app.initialize()
+
+        def fail_if_reapplied(conn):
+            raise AssertionError("An applied migration was executed again.")
+
+        already_applied = db_migrations.Migration(
+            version=1,
+            name="initial_schema",
+            apply=fail_if_reapplied,
+        )
+        with patch.object(db_migrations, "MIGRATIONS", (already_applied,)):
+            app.initialize()
+
+        with app.db() as conn:
+            migration_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM schema_migrations WHERE version=1"
+            ).fetchone()["count"]
+        self.assertEqual(migration_count, 1)
+
+    def test_pending_migration_updates_existing_database(self):
+        with app.db() as conn:
+            user_id = conn.execute(
+                "INSERT INTO users(full_name,email,password_hash,created_at) "
+                "VALUES(?,?,?,?) RETURNING id",
+                ("Existing User", "migration-existing@example.com", b"test-hash", "2026-01-01"),
+            ).fetchone()["id"]
+
+        def add_test_marker(conn):
+            conn.execute("CREATE TABLE migration_test_marker(id INTEGER PRIMARY KEY)")
+            conn.execute("INSERT INTO migration_test_marker(id) VALUES(1)")
+
+        pending = db_migrations.Migration(
+            version=2,
+            name="test_pending_marker",
+            apply=add_test_marker,
+        )
+        with patch.object(
+            db_migrations,
+            "MIGRATIONS",
+            db_migrations.MIGRATIONS + (pending,),
+        ):
+            app.initialize()
+
+        with app.db() as conn:
+            user = conn.execute(
+                "SELECT email FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+            marker = conn.execute("SELECT id FROM migration_test_marker").fetchone()
+            applied = conn.execute(
+                "SELECT name FROM schema_migrations WHERE version=2"
+            ).fetchone()
+
+        self.assertEqual(user["email"], "migration-existing@example.com")
+        self.assertEqual(marker["id"], 1)
+        self.assertEqual(applied["name"], "test_pending_marker")
+
+    def test_failed_migration_is_not_recorded_and_is_rolled_back(self):
+        def fail_after_schema_change(conn):
+            conn.execute("CREATE TABLE migration_failure_marker(id INTEGER PRIMARY KEY)")
+            raise RuntimeError("intentional migration failure")
+
+        failing = db_migrations.Migration(
+            version=2,
+            name="test_failing_migration",
+            apply=fail_after_schema_change,
+        )
+        with patch.object(
+            db_migrations,
+            "MIGRATIONS",
+            db_migrations.MIGRATIONS + (failing,),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "intentional migration failure"):
+                app.initialize()
+
+        with app.db() as conn:
+            migration = conn.execute(
+                "SELECT version FROM schema_migrations WHERE version=2"
+            ).fetchone()
+            table = conn.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema=current_schema() AND table_name='migration_failure_marker'"
+            ).fetchone()
+
+        self.assertIsNone(migration)
+        self.assertIsNone(table)
 
     def test_user_and_expense_persist_after_reopening_connection(self):
         with app.db() as conn:
@@ -221,6 +352,64 @@ class DatabaseIntegrationTests(unittest.TestCase):
 
         self.assertEqual(user_count, 0)
         self.assertEqual(budget_count, 0)
+
+    def test_database_pool_reuses_connections(self):
+        backend_pids = set()
+        for _ in range(8):
+            with app.db() as conn:
+                backend_pids.add(
+                    conn.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+                )
+
+        self.assertGreater(len(backend_pids), 0)
+        self.assertLessEqual(len(backend_pids), app.DB_POOL_MIN_SIZE)
+
+    def test_database_pool_uses_distinct_connections_concurrently(self):
+        start_together = threading.Barrier(2)
+
+        def read_backend_pid():
+            with app.db() as conn:
+                start_together.wait(timeout=5)
+                return conn.execute(
+                    "SELECT pg_backend_pid() AS pid"
+                ).fetchone()["pid"]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: read_backend_pid(), range(2)))
+
+        self.assertEqual(len(set(results)), 2)
+
+    def test_database_pool_rolls_back_and_returns_connection_after_error(self):
+        with app.db() as conn:
+            conn.execute(
+                "CREATE TABLE pool_rollback_probe (id INTEGER PRIMARY KEY)"
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "rollback probe"):
+            with app.db() as conn:
+                conn.execute("INSERT INTO pool_rollback_probe(id) VALUES(?)", (1,))
+                raise RuntimeError("rollback probe")
+
+        with app.db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS total FROM pool_rollback_probe"
+            ).fetchone()["total"]
+            conn.execute("DROP TABLE pool_rollback_probe")
+
+        self.assertEqual(count, 0)
+
+    def test_database_pool_can_be_closed_and_recreated(self):
+        original_pool = app._DATABASE_POOL
+        self.assertIsNotNone(original_pool)
+
+        with patch.object(original_pool, "close", wraps=original_pool.close) as close:
+            app.close_database_pool()
+            close.assert_called_once_with()
+
+        self.assertIsNone(app._DATABASE_POOL)
+        with app.db() as conn:
+            conn.execute("SELECT 1 AS available").fetchone()
+        self.assertIsNot(app._DATABASE_POOL, original_pool)
 
     def test_database_connection_failure_is_reported(self):
         original_database_url = app.DATABASE_URL

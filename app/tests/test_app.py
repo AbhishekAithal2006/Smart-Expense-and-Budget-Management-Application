@@ -56,8 +56,8 @@ class AppFlowTests(unittest.TestCase):
         self.client = build_opener(HTTPCookieProcessor(self.cookies))
         self.csrf = ""
 
-    def request(self, path, method="GET", payload=None, csrf=True, csrf_token=None, cookie=None, no_cookie=False):
-        data = None if payload is None else json.dumps(payload).encode()
+    def request(self, path, method="GET", payload=None, csrf=True, csrf_token=None, cookie=None, no_cookie=False, extra_headers=None, raw_data=None):
+        data = raw_data if raw_data is not None else (None if payload is None else json.dumps(payload).encode())
         headers = {"Content-Type": "application/json"}
         if method not in ("GET", "HEAD") and csrf:
             token = self.csrf if csrf_token is None else csrf_token
@@ -65,13 +65,19 @@ class AppFlowTests(unittest.TestCase):
                 headers["X-CSRF-Token"] = token
         if cookie is not None:
             headers["Cookie"] = f"session={cookie}"
+        if extra_headers is not None:
+            headers.update(extra_headers)
         request = Request(self.base + path, data=data, headers=headers, method=method)
         client = build_opener() if no_cookie else self.client
         try:
             response = client.open(request, timeout=3)
         except HTTPError as error:
             response = error
-        body = json.loads(response.read() or b"{}")
+        raw_body = response.read() or b"{}"
+        try:
+            body = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            body = raw_body.decode("utf-8", errors="replace")
         return response.code, body
 
     def register(self, email="owner@example.com"):
@@ -589,6 +595,253 @@ class AppFlowTests(unittest.TestCase):
         status, body = self.request("/api/login", "POST", {"email": "owner@example.com", "password": "correct-horse-123"}, csrf=False)
         self.assertEqual(status, 429)
         self.assertIn("15 minutes", body["error"])
+
+    def test_budget_endpoints_validate_create_update_and_delete(self):
+        self.register()
+        status, _ = self.request("/api/budgets")
+        self.assertEqual(status, 200)
+        self.assertEqual([], _["budgets"])
+
+        start = app.date.today()
+        weekly = {
+            "budgetType": "weekly", "amount": 500,
+            "startDate": start.isoformat(), "endDate": (start + app.timedelta(days=6)).isoformat(),
+        }
+        cases = [
+            ({**weekly, "budgetType": "daily"}, "budget type"),
+            ({**weekly, "amount": "bad"}, "amount"),
+            ({**weekly, "amount": float("inf")}, "positive"),
+            ({**weekly, "amount": 0}, "positive"),
+            ({**weekly, "startDate": "not-a-date"}, "dates"),
+            ({**weekly, "endDate": start.isoformat()}, "7 days"),
+            ({**weekly, "endDate": (start - app.timedelta(days=1)).isoformat()}, "on or after"),
+        ]
+        for payload, _label in cases:
+            with self.subTest(case=_label):
+                status, _ = self.request("/api/budgets", "POST", payload)
+                self.assertEqual(status, 400)
+
+        status, created = self.request("/api/budgets", "POST", weekly)
+        self.assertEqual(status, 201, created)
+        budget_id = created["budget"]["id"]
+        status, duplicate = self.request("/api/budgets", "POST", weekly)
+        self.assertEqual(status, 409, duplicate)
+
+        status, _ = self.request("/api/budgets", "PATCH", weekly)
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/budgets?id=0", "PATCH", weekly)
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/budgets?id=99999", "PATCH", weekly)
+        self.assertEqual(status, 404)
+        invalid_update = {**weekly, "amount": "bad"}
+        status, _ = self.request(f"/api/budgets?id={budget_id}", "PATCH", invalid_update)
+        self.assertEqual(status, 400)
+        status, _ = self.request(f"/api/budgets?id={budget_id}", "PATCH", {**weekly, "budgetType": "daily"})
+        self.assertEqual(status, 400)
+        status, updated = self.request(f"/api/budgets?id={budget_id}", "PATCH", {**weekly, "amount": 650})
+        self.assertEqual(status, 200, updated)
+        self.assertEqual(updated["budget"]["amount_cents"], 65000)
+
+        status, _ = self.request("/api/budgets", "DELETE")
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/budgets?id=99999", "DELETE")
+        self.assertEqual(status, 404)
+        status, deleted = self.request(f"/api/budgets?id={budget_id}", "DELETE")
+        self.assertEqual(status, 200, deleted)
+
+    def test_category_mutations_validate_and_rename_existing_expenses(self):
+        self.register()
+        status, _ = self.request("/api/categories", "POST", {"name": "Food"})
+        self.assertEqual(status, 400)
+        status, first = self.request("/api/categories", "POST", {"name": "Pet Care"})
+        self.assertEqual(status, 201, first)
+        status, _ = self.request("/api/categories", "POST", {"name": "pet care"})
+        self.assertEqual(status, 409)
+        status, _ = self.request(f"/api/categories/99999", "PATCH", {"name": "Renamed"})
+        self.assertEqual(status, 404)
+        status, _ = self.request(f"/api/categories/{first['id']}", "PATCH", {"name": "Food"})
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/categories", "POST", {"name": "Transport"})
+        self.assertEqual(status, 201)
+        status, _ = self.request(f"/api/categories/{first['id']}", "PATCH", {"name": "transport"})
+        self.assertEqual(status, 409)
+
+        status, _ = self.request("/api/expenses", "POST", {
+            "amount": 18, "category": "Pet Care", "date": app.date.today().isoformat(),
+        })
+        self.assertEqual(status, 201)
+        status, renamed = self.request(f"/api/categories/{first['id']}", "PATCH", {"name": "Pets"})
+        self.assertEqual(status, 200, renamed)
+        status, history = self.request("/api/expenses")
+        self.assertEqual(status, 200)
+        self.assertEqual(history["expenses"][0]["category"], "Pets")
+
+    def test_analytics_and_monthly_yearly_reports_cover_empty_and_populated_periods(self):
+        self.register()
+        status, analytics = self.request("/api/analytics")
+        self.assertEqual(status, 200, analytics)
+        self.assertEqual(analytics["monthAverageCents"], 0)
+        status, invalid = self.request("/api/report?type=monthly&period=2026-13")
+        self.assertEqual(status, 400, invalid)
+        status, invalid = self.request("/api/report?type=weekly&period=2026")
+        self.assertEqual(status, 400, invalid)
+        status, invalid = self.request("/api/report?type=yearly&period=1999")
+        self.assertEqual(status, 400, invalid)
+
+        today = app.date.today()
+        status, _ = self.request("/api/expenses", "POST", {
+            "amount": 42, "category": "Food", "date": today.isoformat(), "description": "Coverage sample",
+        })
+        self.assertEqual(status, 201)
+        status, analytics = self.request("/api/analytics")
+        self.assertEqual(status, 200, analytics)
+        self.assertEqual(analytics["monthCount"], 1)
+        status, monthly = self.request(f"/api/report?type=monthly&period={today:%Y-%m}")
+        self.assertEqual(status, 200, monthly)
+        self.assertEqual(monthly["expenseCount"], 1)
+        status, yearly = self.request(f"/api/report?type=yearly&period={today:%Y}")
+        self.assertEqual(status, 200, yearly)
+        self.assertEqual(len(yearly["months"]), 12)
+        self.assertEqual(yearly["months"][today.month - 1]["count"], 1)
+
+    def test_profile_validation_and_email_change_verification_paths(self):
+        self.register()
+        valid = {"fullName": "Test User", "email": "owner@example.com", "mobile": "", "currencyCode": "INR"}
+        for payload in (
+            {**valid, "fullName": ""},
+            {**valid, "email": "not-an-email"},
+            {**valid, "mobile": "123"},
+            {**valid, "currencyCode": "XYZ"},
+        ):
+            with self.subTest(payload=payload):
+                status, _ = self.request("/api/profile", "PATCH", payload)
+                self.assertEqual(status, 400)
+
+        with patch.object(app, "_send_email_change_verification", side_effect=RuntimeError("SMTP unavailable")):
+            status, _ = self.request("/api/profile", "PATCH", {**valid, "email": "new@example.com"})
+            self.assertEqual(status, 503)
+
+        captured = {}
+        def capture_email(email, token):
+            captured.update(email=email, token=token)
+        with patch.object(app, "_send_email_change_verification", side_effect=capture_email):
+            status, pending = self.request("/api/profile", "PATCH", {**valid, "email": "new@example.com", "currencyCode": "USD"})
+        self.assertEqual(status, 200, pending)
+        self.assertTrue(pending["emailVerificationPending"])
+        self.assertEqual(pending["pendingEmail"], "new@example.com")
+        token = captured["token"]
+
+        status, _ = self.request("/api/profile")
+        self.assertEqual(status, 200)
+        status, _ = self.request("/auth/email/verify?token=bad")
+        self.assertEqual(status, 200)
+        status, _ = self.request(f"/auth/email/verify?token={token}")
+        self.assertEqual(status, 200)
+        with app.db() as conn:
+            user = conn.execute("SELECT email FROM users WHERE email=?", ("new@example.com",)).fetchone()
+        self.assertIsNotNone(user)
+
+    def test_static_routes_and_unknown_routes(self):
+        for path in ("/", "/index.html", "/app.js", "/styles.css"):
+            with self.subTest(path=path):
+                status, _ = self.request(path)
+                self.assertEqual(status, 200)
+        self.register()
+        for method, path, payload in (
+            ("GET", "/unknown-route", None),
+            ("POST", "/unknown-route", {}),
+            ("PATCH", "/unknown-route", {}),
+            ("DELETE", "/unknown-route", None),
+        ):
+            with self.subTest(method=method):
+                status, _ = self.request(path, method, payload)
+                self.assertEqual(status, 404)
+
+    def test_auth_password_and_request_validation_branches(self):
+        for payload in (
+            {"fullName": "User", "email": "bad", "password": "correct-horse-123"},
+            {"fullName": "User", "email": "valid@example.com", "password": "short"},
+            {"fullName": "", "email": "valid@example.com", "password": "correct-horse-123"},
+        ):
+            status, _ = self.request("/api/register", "POST", payload, csrf=False)
+            self.assertEqual(status, 400)
+        status, _ = self.request("/api/register", "POST", {
+            "fullName": "Test User", "email": "owner@example.com", "password": "correct-horse-123",
+        }, csrf=False)
+        self.assertEqual(status, 200)
+        self.csrf = ""
+        status, _ = self.request("/api/register", "POST", {
+            "fullName": "Duplicate", "email": "owner@example.com", "password": "correct-horse-123",
+        }, csrf=False)
+        self.assertEqual(status, 409)
+        status, _ = self.request("/api/login", "POST", {"email": "unknown@example.com", "password": "correct-horse-123"}, csrf=False)
+        self.assertEqual(status, 401)
+        status, _ = self.request("/api/login", "POST", {"email": "owner@example.com", "password": "wrong-password"}, csrf=False)
+        self.assertEqual(status, 401)
+        self.login("owner@example.com")
+        for payload in (
+            {"currentPassword": "correct-horse-123", "newPassword": "short", "confirmPassword": "short"},
+            {"currentPassword": "correct-horse-123", "newPassword": "new-password-123", "confirmPassword": "different-password"},
+            {"currentPassword": "wrong-password", "newPassword": "new-password-123", "confirmPassword": "new-password-123"},
+        ):
+            status, _ = self.request("/api/password", "POST", payload)
+            self.assertIn(status, (400, 401))
+
+        status, _ = self.request("/api/register", "POST", {}, extra_headers={"Origin": "https://attacker.invalid"}, csrf=False)
+        self.assertEqual(status, 403)
+        status, _ = self.request("/api/register", "POST", {}, raw_data=b"not json", csrf=False)
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/profile", "PATCH", {}, extra_headers={"Origin": "https://attacker.invalid"})
+        self.assertEqual(status, 403)
+        status, _ = self.request("/api/profile", "PATCH", {}, raw_data=b"not json")
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/expenses", "POST", {}, extra_headers={"Origin": "https://attacker.invalid"})
+        self.assertEqual(status, 403)
+        status, _ = self.request("/api/expenses", "POST", {}, raw_data=b"not json")
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/expenses", "POST", {"amount": "bad", "category": "Food", "date": "bad-date"})
+        self.assertEqual(status, 400)
+        status, _ = self.request("/api/expenses", "POST", {"amount": 10, "category": "not a category", "date": app.date.today().isoformat()})
+        self.assertEqual(status, 400)
+
+    def test_expired_and_conflicting_email_change_tokens_are_rejected(self):
+        self.register()
+        valid = {"fullName": "Test User", "email": "owner@example.com", "mobile": "", "currencyCode": "INR"}
+        captured = {}
+        def capture_email(email, token):
+            captured.update(email=email, token=token)
+
+        with patch.object(app, "_send_email_change_verification", side_effect=capture_email):
+            status, _ = self.request("/api/profile", "PATCH", {**valid, "email": "expired@example.com"})
+        self.assertEqual(status, 200)
+        with app.db() as conn:
+            conn.execute("UPDATE email_change_requests SET expires_at=? WHERE new_email=?", (int(app.time.time()) - 1, "expired@example.com"))
+        self.request(f"/auth/email/verify?token={captured['token']}")
+        with app.db() as conn:
+            expired = conn.execute("SELECT 1 FROM email_change_requests WHERE new_email=?", ("expired@example.com",)).fetchone()
+        self.assertIsNone(expired)
+
+        with patch.object(app, "_send_email_change_verification", side_effect=capture_email):
+            status, _ = self.request("/api/profile", "PATCH", {**valid, "email": "taken@example.com"})
+        self.assertEqual(status, 200)
+        with app.db() as conn:
+            conn.execute(
+                "INSERT INTO users(full_name,email,password_hash,created_at) VALUES(?,?,?,?)",
+                ("Other", "taken@example.com", app._password_hash("another-password-123"), app.datetime.now(app.timezone.utc).isoformat()),
+            )
+        self.request(f"/auth/email/verify?token={captured['token']}")
+        with app.db() as conn:
+            current_email = conn.execute("SELECT email FROM users WHERE email=?", ("owner@example.com",)).fetchone()
+            remaining = conn.execute("SELECT 1 FROM email_change_requests WHERE new_email=?", ("taken@example.com",)).fetchone()
+        self.assertIsNotNone(current_email)
+        self.assertIsNone(remaining)
+
+    def test_static_file_read_errors_are_returned_as_http_errors(self):
+        with patch.object(app.Path, "read_bytes", side_effect=OSError("missing static file")):
+            status, _ = self.request("/")
+            self.assertEqual(status, 500)
+            status, _ = self.request("/app.js")
+            self.assertEqual(status, 404)
 
 
 if __name__ == "__main__":

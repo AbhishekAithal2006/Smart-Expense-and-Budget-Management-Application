@@ -605,7 +605,11 @@ class Handler(BaseHTTPRequestHandler):
                     outcome = "expired"
                 elif request is not None:
                     try:
-                        conn.execute("UPDATE users SET email=? WHERE id=?", (request["new_email"], request["user_id"]))
+                        # Isolate the unique-email update in a savepoint so a
+                        # collision does not leave the outer transaction aborted;
+                        # the pending token can still be deleted below.
+                        with conn.connection.transaction():
+                            conn.execute("UPDATE users SET email=? WHERE id=?", (request["new_email"], request["user_id"]))
                     except psycopg.IntegrityError:
                         outcome = "already_used"
                     else:

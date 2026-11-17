@@ -1,8 +1,10 @@
 # System Validation Report
 
-**Project:** Smart Expense and Budget Management Application  
-**Execution date:** 5 November 2026  
-**Result:** **PASS — all automated system checks passed**
+For an explanation of this report and how it differs from the per-module results, see [Guide to the Test Reports](Test_Reports_Guide.md).
+
+- **Project:** Smart Expense and Budget Management Application
+- **Execution date:** 17 November 2026
+- **Result:** **PASS — all automated system checks passed**
 
 ## Validation summary
 
@@ -16,7 +18,7 @@
 | Dashboard endpoints, reports, concurrency, and responsiveness | 6 | Pass |
 | Monthly/yearly report behavior and access control | 10 | Pass |
 | Shared helper, OAuth boundary, SMTP configuration, backup, and CLI checks | 30 | Pass |
-| **Automated PostgreSQL-backed tests and helper tests** | **107** | **107 passed, 0 failed** |
+| **Automated PostgreSQL-backed tests and helper tests** | **115** | **115 passed, 0 failed** |
 | Python syntax compilation (`app.py`, migrations, tests) | — | Pass |
 | Browser JavaScript syntax (`node --check static/app.js`) | — | Pass |
 
@@ -31,5 +33,5 @@
 
 ## Test execution
 
-The full `unittest` discovery run completed in 19.012 seconds with 107 tests passing.
+The full `unittest` discovery run completed in 19.372 seconds with 115 tests passing.
 

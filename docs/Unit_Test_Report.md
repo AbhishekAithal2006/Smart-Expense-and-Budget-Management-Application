@@ -1,23 +1,25 @@
 # Unit Test Report
 
-**Project:** Smart Expense and Budget Management Application  
-**Execution date:** 5 November 2026  
-**Result:** **PASS — 107 of 107 tests passed**  
-**Runtime:** Python 3.12.16, `unittest`, local PostgreSQL
+For an explanation of this report and how it differs from the system-level summary, see [Guide to the Test Reports](Test_Reports_Guide.md).
+
+- **Project:** Smart Expense and Budget Management Application
+- **Execution date:** 17 November 2026
+- **Result:** **PASS — 115 of 115 tests passed**
+- **Runtime:** Python 3.12.16, `unittest`, local PostgreSQL
 
 ## Test results
 
 | Test module | Tests | Passed | Failed / errors |
 |---|---:|---:|---:|
 | `test_analytics.py` | 7 | 7 | 0 |
-| `test_app.py` | 15 | 15 | 0 |
+| `test_app.py` | 23 | 23 | 0 |
 | `test_budget_alerts.py` | 18 | 18 | 0 |
 | `test_database_integration.py` | 17 | 17 | 0 |
 | `test_performance.py` | 4 | 4 | 0 |
 | `test_performance_dashboard.py` | 6 | 6 | 0 |
 | `test_reports.py` | 10 | 10 | 0 |
 | `test_unit_helpers.py` | 30 | 30 | 0 |
-| **Total** | **107** | **107** | **0** |
+| **Total** | **115** | **115** | **0** |
 
 ## Scope
 
